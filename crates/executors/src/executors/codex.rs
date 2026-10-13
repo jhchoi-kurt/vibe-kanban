@@ -460,7 +460,7 @@ impl Codex {
 
     fn build_thread_start_params(&self, cwd: &Path) -> ThreadStartParams {
         let sandbox = match self.sandbox.as_ref() {
-            None | Some(SandboxMode::Auto) => Some(V2SandboxMode::WorkspaceWrite), // match the Auto preset in codex
+            None | Some(SandboxMode::Auto) => Some(V2SandboxMode::ReadOnly), // custom: Codex defaults to read-only reviewer
             Some(SandboxMode::ReadOnly) => Some(V2SandboxMode::ReadOnly),
             Some(SandboxMode::WorkspaceWrite) => Some(V2SandboxMode::WorkspaceWrite),
             Some(SandboxMode::DangerFullAccess) => Some(V2SandboxMode::DangerFullAccess),
