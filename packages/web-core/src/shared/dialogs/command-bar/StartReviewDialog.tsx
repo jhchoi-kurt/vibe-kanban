@@ -56,6 +56,10 @@ const StartReviewDialogImpl = create<StartReviewDialogProps>(
 
     const resolvedDefaultProfile = useMemo(() => {
       if (defaultProfile) return defaultProfile;
+      // custom: reviews default to Codex (Claude codes, Codex reviews)
+      if (profiles && 'CODEX' in profiles) {
+        return { executor: 'CODEX' as BaseCodingAgent, variant: null };
+      }
       if (sessionExecutor) {
         const variant =
           config?.executor_profile?.executor === sessionExecutor
@@ -64,13 +68,17 @@ const StartReviewDialogImpl = create<StartReviewDialogProps>(
         return { executor: sessionExecutor, variant };
       }
       return config?.executor_profile ?? null;
-    }, [defaultProfile, sessionExecutor, config?.executor_profile]);
+    }, [defaultProfile, profiles, sessionExecutor, config?.executor_profile]);
 
     const [userSelectedProfile, setUserSelectedProfile] =
       useState<ExecutorProfileId | null>(null);
     const [additionalPrompt, setAdditionalPrompt] = useState('');
+    // custom: a different executor cannot resume the coding session, so
+    // start a fresh session when the reviewer differs from the coder.
     const [createNewSession, setCreateNewSession] = useState(
-      () => !resolvedSessionId
+      () =>
+        !resolvedSessionId ||
+        (resolvedDefaultProfile?.executor ?? null) !== sessionExecutor
     );
     const [includeGitContext, setIncludeGitContext] = useState(true);
     const [isSubmitting, setIsSubmitting] = useState(false);
