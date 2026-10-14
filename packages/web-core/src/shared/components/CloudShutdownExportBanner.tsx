@@ -9,6 +9,10 @@ interface CloudShutdownExportBannerProps {
 export function CloudShutdownExportBanner({
   onClick,
 }: CloudShutdownExportBannerProps) {
+  // Hidden in this fork: the cloud shutdown notice is not relevant locally.
+  const HIDE_CLOUD_SHUTDOWN_BANNER = true;
+  if (HIDE_CLOUD_SHUTDOWN_BANNER) return null;
+
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
