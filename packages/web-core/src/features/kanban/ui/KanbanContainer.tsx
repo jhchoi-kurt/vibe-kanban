@@ -1310,6 +1310,45 @@ export function KanbanContainer() {
                                 </button>
                               );
                             })()}
+                            {(() => {
+                              const prs = getPullRequestsForIssue(issue.id);
+                              if (prs.length === 0) return null;
+                              return (
+                                <div className="mb-half flex flex-wrap gap-half">
+                                  {prs.map((pr) => {
+                                    const st = String(pr.status);
+                                    const cfg =
+                                      st === 'merged'
+                                        ? {
+                                            label: `✓ PR #${pr.number} 병합됨`,
+                                            cls: 'bg-purple-500/15 text-purple-600 dark:text-purple-300',
+                                          }
+                                        : st === 'closed'
+                                          ? {
+                                              label: `PR #${pr.number} 닫힘`,
+                                              cls: 'bg-panel text-low',
+                                            }
+                                          : {
+                                              label: `🔀 PR #${pr.number} 리뷰·병합 필요`,
+                                              cls: 'bg-orange-500/20 text-orange-600 dark:text-orange-300',
+                                            };
+                                    return (
+                                      <a
+                                        key={pr.url}
+                                        href={pr.url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        title="GitHub에서 PR 열기"
+                                        onClick={(e) => e.stopPropagation()}
+                                        className={`inline-flex rounded-sm px-half py-[1px] text-xs font-medium hover:underline ${cfg.cls}`}
+                                      >
+                                        {cfg.label} ↗
+                                      </a>
+                                    );
+                                  })}
+                                </div>
+                              );
+                            })()}
                             <KanbanCardContent
                               displayId={issue.simple_id}
                               title={issue.title}
