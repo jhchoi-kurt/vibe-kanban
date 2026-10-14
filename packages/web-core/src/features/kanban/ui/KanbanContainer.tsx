@@ -623,6 +623,39 @@ export function KanbanContainer() {
     return map;
   }, [pullRequests]);
 
+  // Agent activity per issue, shown as a badge on each card (independent of
+  // the "show workspaces" view option).
+  const agentStatusByIssueId = useMemo(() => {
+    type AgentStatus = 'approval' | 'running' | 'failed' | 'done';
+    const rank: Record<AgentStatus, number> = {
+      approval: 4,
+      running: 3,
+      failed: 2,
+      done: 1,
+    };
+    const map = new Map<string, AgentStatus>();
+    for (const issue of issues) {
+      let best: AgentStatus | null = null;
+      for (const workspace of getWorkspacesForIssue(issue.id)) {
+        if (workspace.archived || !workspace.local_workspace_id) continue;
+        const local = localWorkspacesById.get(workspace.local_workspace_id);
+        if (!local) continue;
+        let st: AgentStatus | null = null;
+        if (local.hasPendingApproval) st = 'approval';
+        else if (local.isRunning) st = 'running';
+        else if (
+          local.latestProcessStatus === 'failed' ||
+          local.latestProcessStatus === 'killed'
+        )
+          st = 'failed';
+        else if (local.latestProcessStatus === 'completed') st = 'done';
+        if (st && (!best || rank[st] > rank[best])) best = st;
+      }
+      if (best) map.set(issue.id, best);
+    }
+    return map;
+  }, [issues, getWorkspacesForIssue, localWorkspacesById]);
+
   const workspacesByIssueId = useMemo(() => {
     if (!showWorkspaces) {
       return new Map<string, WorkspaceWithStats[]>();
@@ -1105,6 +1138,35 @@ export function KanbanContainer() {
                             isSelected={selectedIssueIds.has(issue.id)}
                             dragDisabled={isMultiSelectActive}
                           >
+                            {(() => {
+                              const st = agentStatusByIssueId.get(issue.id);
+                              if (!st) return null;
+                              const cfg = {
+                                approval: {
+                                  label: '⚠ 승인 필요',
+                                  cls: 'bg-orange-500/20 text-orange-600 dark:text-orange-300',
+                                },
+                                running: {
+                                  label: '● 에이전트 작업 중',
+                                  cls: 'bg-blue-500/20 text-blue-600 dark:text-blue-300 animate-pulse',
+                                },
+                                failed: {
+                                  label: '✕ 실패·중단됨',
+                                  cls: 'bg-red-500/20 text-red-600 dark:text-red-300',
+                                },
+                                done: {
+                                  label: '✓ 작업 끝남 · 확인 대기',
+                                  cls: 'bg-green-500/15 text-green-700 dark:text-green-300',
+                                },
+                              }[st];
+                              return (
+                                <div
+                                  className={`mb-half inline-flex rounded-sm px-half py-[1px] text-xs font-medium ${cfg.cls}`}
+                                >
+                                  {cfg.label}
+                                </div>
+                              );
+                            })()}
                             <KanbanCardContent
                               displayId={issue.simple_id}
                               title={issue.title}
