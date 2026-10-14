@@ -20,6 +20,7 @@ const PRESET_PREFERRED_EXECUTOR: Record<string, string> = {
   ISSUE_PLANNER: 'CLAUDE_CODE',
   REVIEW: 'CODEX',
   FAST_REVIEW: 'CODEX',
+  ASK: 'CLAUDE_CODE',
 };
 
 export function getPreferredExecutorForPreset<T extends string>(
