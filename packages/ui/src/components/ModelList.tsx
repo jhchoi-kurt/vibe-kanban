@@ -136,13 +136,31 @@ export function ModelList({
   const { t } = useTranslation('common');
   const normalizedSearch = searchQuery.trim().toLowerCase();
 
-  const filteredModels = normalizedSearch
+  let filteredModels = normalizedSearch
     ? models.filter((model) => {
         const name = model.name?.toLowerCase() ?? '';
         const id = model.id?.toLowerCase() ?? '';
         return name.includes(normalizedSearch) || id.includes(normalizedSearch);
       })
     : models;
+
+  // Allow any model id: typing an id that isn't listed offers it as a custom entry,
+  // and a selected model that isn't in the list is still shown.
+  const trimmedSearch = searchQuery.trim();
+  const hasExact = (id: string) =>
+    models.some((model) => model.id.toLowerCase() === id.toLowerCase());
+  if (selectedModelId && !hasExact(selectedModelId)) {
+    filteredModels = [
+      { id: selectedModelId, name: selectedModelId, provider_id: null, reasoning_options: [] },
+      ...filteredModels,
+    ];
+  }
+  if (trimmedSearch && !hasExact(trimmedSearch) && trimmedSearch !== selectedModelId) {
+    filteredModels = [
+      ...filteredModels,
+      { id: trimmedSearch, name: `${trimmedSearch} (직접 입력)`, provider_id: null, reasoning_options: [] },
+    ];
+  }
 
   const showEmptyState = filteredModels.length === 0 && !showDefaultOption;
   const isDefaultSelected = selectedModelId === null;

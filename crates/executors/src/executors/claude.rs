@@ -278,6 +278,7 @@ fn default_discovered_options() -> crate::executor_discovery::ExecutorDiscovered
         model_selector: ModelSelectorConfig {
             providers: vec![],
             models: [
+                ("claude-opus-5-5", "Claude Opus 5.5"),
                 ("opus", "Opus"),
                 ("opus[1m]", "Opus (1M context)"),
                 ("sonnet", "Sonnet"),

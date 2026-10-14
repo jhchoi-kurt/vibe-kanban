@@ -205,6 +205,12 @@ impl StandardCodingAgentExecutor for Gemini {
             model_selector: ModelSelectorConfig {
                 models: vec![
                     ModelInfo {
+                        id: "gemini-4-argon".to_string(),
+                        name: "Gemini 4 Argon".to_string(),
+                        provider_id: None,
+                        reasoning_options: vec![],
+                    },
+                    ModelInfo {
                         id: "gemini-3.1-pro-preview".to_string(),
                         name: "Gemini 3.1 Pro Preview".to_string(),
                         provider_id: None,
