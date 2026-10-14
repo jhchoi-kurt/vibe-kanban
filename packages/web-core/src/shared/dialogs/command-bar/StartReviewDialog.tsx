@@ -58,7 +58,7 @@ const StartReviewDialogImpl = create<StartReviewDialogProps>(
       if (defaultProfile) return defaultProfile;
       // custom: reviews default to Codex (Claude codes, Codex reviews)
       if (profiles && 'CODEX' in profiles) {
-        return { executor: 'CODEX' as BaseCodingAgent, variant: null };
+        return { executor: 'CODEX' as BaseCodingAgent, variant: 'REVIEW' };
       }
       if (sessionExecutor) {
         const variant =
