@@ -687,9 +687,10 @@ export function KanbanContainer() {
   // Agent activity per issue, shown as a badge on each card (independent of
   // the "show workspaces" view option).
   const agentStatusByIssueId = useMemo(() => {
-    type AgentStatus = 'approval' | 'running' | 'failed' | 'done';
+    type AgentStatus = 'approval' | 'input' | 'running' | 'failed' | 'done';
     const rank: Record<AgentStatus, number> = {
-      approval: 4,
+      approval: 5,
+      input: 4,
       running: 3,
       failed: 2,
       done: 1,
@@ -709,6 +710,11 @@ export function KanbanContainer() {
           local.latestProcessStatus === 'killed'
         )
           st = 'failed';
+        else if (
+          local.latestProcessStatus === 'completed' &&
+          local.needsUserInput
+        )
+          st = 'input';
         else if (local.latestProcessStatus === 'completed') st = 'done';
         if (st && (!best || rank[st] > rank[best])) best = st;
       }
@@ -1227,6 +1233,10 @@ export function KanbanContainer() {
                                   label: '⚠ 승인 필요',
                                   cls: 'bg-orange-500/20 text-orange-600 dark:text-orange-300',
                                 },
+                                input: {
+                                  label: '🟠 결정 필요 · 답변 대기',
+                                  cls: 'bg-orange-500/20 text-orange-600 dark:text-orange-300',
+                                },
                                 running: {
                                   label: '● 에이전트 작업 중',
                                   cls: 'bg-blue-500/20 text-blue-600 dark:text-blue-300 animate-pulse',
@@ -1236,7 +1246,7 @@ export function KanbanContainer() {
                                   cls: 'bg-red-500/20 text-red-600 dark:text-red-300',
                                 },
                                 done: {
-                                  label: '✓ 작업 끝남 · 확인 대기',
+                                  label: '✓ 응답 완료 · 결과 확인',
                                   cls: 'bg-green-500/15 text-green-700 dark:text-green-300',
                                 },
                               }[st];

@@ -28,6 +28,7 @@ export interface SidebarWorkspace {
   hasPendingApproval?: boolean;
   hasRunningDevServer?: boolean;
   hasUnseenActivity?: boolean;
+  needsUserInput?: boolean;
   latestProcessCompletedAt?: string;
   latestProcessStatus?: 'running' | 'completed' | 'failed' | 'killed';
   prStatus?: 'open' | 'merged' | 'closed' | 'unknown';
@@ -75,6 +76,7 @@ function toSidebarWorkspace(
     hasPendingApproval: summary?.has_pending_approval,
     hasRunningDevServer: summary?.has_running_dev_server,
     hasUnseenActivity: summary?.has_unseen_turns,
+    needsUserInput: summary?.needs_user_input,
     latestProcessCompletedAt: summary?.latest_process_completed_at ?? undefined,
     latestProcessStatus: summary?.latest_process_status ?? undefined,
     prStatus: summary?.pr_status ?? undefined,

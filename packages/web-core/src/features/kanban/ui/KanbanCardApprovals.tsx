@@ -69,7 +69,7 @@ export function KanbanCardApprovals({ approvals, onOpenDetails }: Props) {
       {approvals.map((a) => (
         <div key={a.approval_id} className="flex flex-col gap-half">
           <div className="text-xs font-medium text-orange-700 dark:text-orange-300">
-            ⚠ {a.is_question ? '에이전트 질문에 답 필요' : '승인 필요'}:{' '}
+            {a.is_question ? '🟠 에이전트 질문에 답 필요' : '⚠ 승인 필요'}:{' '}
             {describeTool(a.tool_name)}
           </div>
           {a.tool_name !== describeTool(a.tool_name) && (
@@ -112,7 +112,7 @@ export function KanbanCardApprovals({ approvals, onOpenDetails }: Props) {
               }}
               className="px-half py-[2px] text-xs text-low underline hover:text-normal"
             >
-              자세히
+              {a.is_question ? '답하러 가기' : '자세히'}
             </button>
           </div>
         </div>

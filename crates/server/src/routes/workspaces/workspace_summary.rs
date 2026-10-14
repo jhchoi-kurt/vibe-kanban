@@ -45,6 +45,8 @@ pub struct WorkspaceSummary {
     pub has_running_dev_server: bool,
     /// Does this workspace have unseen coding agent turns?
     pub has_unseen_turns: bool,
+    /// Did the agent's latest finished turn end by asking the user to decide?
+    pub needs_user_input: bool,
     /// PR status for this workspace (if any PR exists)
     pub pr_status: Option<MergeStatus>,
     /// PR number for this workspace (if any PR exists)
@@ -134,6 +136,24 @@ pub async fn get_workspace_summaries(
         futures_util::future::join_all(diff_futures).await;
     let diff_stats: HashMap<Uuid, DiffStats> = diff_results.into_iter().flatten().collect();
 
+    // 7b. Detect finished turns that ended with a request for a user decision
+    let mut needs_input_workspaces: std::collections::HashSet<Uuid> =
+        std::collections::HashSet::new();
+    for (ws_id, info) in latest_processes.iter() {
+        if info.status != ExecutionProcessStatus::Completed {
+            continue;
+        }
+        if let Ok(Some(turn)) =
+            CodingAgentTurn::find_by_execution_process_id(pool, info.execution_process_id).await
+            && let Some(summary) = turn.summary
+        {
+            let head: String = summary.trim_start().chars().take(200).collect();
+            if head.contains("사용자 결정 필요") {
+                needs_input_workspaces.insert(*ws_id);
+            }
+        }
+    }
+
     // 8. Assemble response
     let summaries: Vec<WorkspaceSummary> = workspaces
         .iter()
@@ -156,6 +176,7 @@ pub async fn get_workspace_summaries(
                 latest_process_status: latest.map(|p| p.status.clone()),
                 has_running_dev_server: dev_server_workspaces.contains(&id),
                 has_unseen_turns: unseen_workspaces.contains(&id),
+                needs_user_input: needs_input_workspaces.contains(&id),
                 pr_status: pr_statuses.get(&id).map(|pr| pr.pr_status.clone()),
                 pr_number: pr_statuses.get(&id).map(|pr| pr.pr_number),
                 pr_url: pr_statuses.get(&id).map(|pr| pr.pr_url.clone()),

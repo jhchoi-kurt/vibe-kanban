@@ -466,6 +466,10 @@ has_running_dev_server: boolean,
  */
 has_unseen_turns: boolean, 
 /**
+ * Did the agent's latest finished turn end by asking the user to decide?
+ */
+needs_user_input: boolean, 
+/**
  * PR status for this workspace (if any PR exists)
  */
 pr_status: MergeStatus | null, 
