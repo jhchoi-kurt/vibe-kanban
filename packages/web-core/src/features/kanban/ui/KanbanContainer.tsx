@@ -1258,6 +1258,58 @@ export function KanbanContainer() {
                                 </div>
                               );
                             })()}
+                            {(() => {
+                              // Sub-issue without its own agent work: point to
+                              // the parent issue's workspace when that one is
+                              // waiting for review or a decision.
+                              if (
+                                !issue.parent_issue_id ||
+                                agentStatusByIssueId.has(issue.id) ||
+                                approvalsByIssueId.has(issue.id)
+                              )
+                                return null;
+                              const parentId = issue.parent_issue_id;
+                              const pst = agentStatusByIssueId.get(parentId);
+                              if (!pst) return null;
+                              const parent = issuesById.get(parentId);
+                              const parentWs = getWorkspacesForIssue(
+                                parentId
+                              ).find(
+                                (w) => !w.archived && !!w.local_workspace_id
+                              );
+                              const label = {
+                                approval: '상위 작업에서 승인 필요',
+                                input: '상위 작업에서 결정 필요',
+                                running: '상위 작업에서 진행 중',
+                                failed: '상위 작업이 실패·중단됨',
+                                done: '상위 작업 완료 · 결과 확인 필요',
+                              }[pst];
+                              const cls =
+                                pst === 'running'
+                                  ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
+                                  : pst === 'failed'
+                                    ? 'bg-red-500/10 text-red-600 dark:text-red-300'
+                                    : 'bg-orange-500/15 text-orange-600 dark:text-orange-300';
+                              return (
+                                <button
+                                  type="button"
+                                  className={`mb-half inline-flex rounded-sm px-half py-[1px] text-left text-xs font-medium hover:underline ${cls}`}
+                                  title="클릭하면 상위 작업의 결과 화면으로 이동해요"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (projectId && parentWs?.local_workspace_id) {
+                                      appNavigation.goToProjectIssueWorkspace(
+                                        projectId,
+                                        parentId,
+                                        parentWs.local_workspace_id
+                                      );
+                                    }
+                                  }}
+                                >
+                                  ↑ {parent?.simple_id ?? '상위'} {label} →
+                                </button>
+                              );
+                            })()}
                             <KanbanCardContent
                               displayId={issue.simple_id}
                               title={issue.title}
