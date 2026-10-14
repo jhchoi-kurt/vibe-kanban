@@ -21,6 +21,7 @@ import { getFileIcon } from '@/shared/lib/fileTypeIcon';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useTheme } from '@/shared/hooks/useTheme';
 import WYSIWYGEditor from '@/shared/components/WYSIWYGEditor';
+import { MermaidDiagram } from '@/shared/components/MermaidDiagram';
 import { useMessageEditContext } from '../model/contexts/MessageEditContext';
 import type { UseResetProcessResult } from '../model/hooks/useResetProcess';
 import { useChangesViewActions } from '@/shared/hooks/useChangesView';
@@ -484,6 +485,8 @@ function AppChatMarkdown({
   maxWidth: string | undefined;
 }) {
   const { viewFileInChanges, findMatchingDiffPath } = useChangesViewActions();
+  const { theme: appTheme } = useTheme();
+  const mermaidTheme = getActualTheme(appTheme);
 
   return (
     <ChatMarkdown
@@ -491,19 +494,62 @@ function AppChatMarkdown({
       workspaceId={workspaceId}
       className={className}
       maxWidth={maxWidth}
-      renderContent={({ content, className, workspaceId }) => (
-        <WYSIWYGEditor
-          value={content}
-          disabled
-          className={className}
-          workspaceId={workspaceId}
-          sessionId={sessionId}
-          findMatchingDiffPath={findMatchingDiffPath}
-          onCodeClick={viewFileInChanges}
-        />
-      )}
+      renderContent={({ content, className, workspaceId }) => {
+        const renderText = (text: string, key?: number) => (
+          <WYSIWYGEditor
+            key={key}
+            value={text}
+            disabled
+            className={className}
+            workspaceId={workspaceId}
+            sessionId={sessionId}
+            findMatchingDiffPath={findMatchingDiffPath}
+            onCodeClick={viewFileInChanges}
+          />
+        );
+        const segments = splitMermaidSegments(content);
+        if (segments.length === 1 && segments[0].kind === 'text') {
+          return renderText(content);
+        }
+        return (
+          <div className="flex flex-col gap-base">
+            {segments.map((seg, i) =>
+              seg.kind === 'mermaid' ? (
+                <div
+                  key={i}
+                  className="overflow-x-auto rounded-sm border bg-primary p-base"
+                >
+                  <MermaidDiagram chart={seg.text} theme={mermaidTheme} />
+                </div>
+              ) : (
+                renderText(seg.text, i)
+              )
+            )}
+          </div>
+        );
+      }}
     />
   );
+}
+
+// Split markdown into plain text and ```mermaid fenced blocks so diagrams
+// render as graphics in the chat.
+function splitMermaidSegments(
+  content: string
+): { kind: 'text' | 'mermaid'; text: string }[] {
+  const re = /```mermaid[^\n]*\n([\s\S]*?)```/g;
+  const out: { kind: 'text' | 'mermaid'; text: string }[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content)) !== null) {
+    const before = content.slice(last, m.index);
+    if (before.trim()) out.push({ kind: 'text', text: before });
+    out.push({ kind: 'mermaid', text: m[1].trim() });
+    last = m.index + m[0].length;
+  }
+  const rest = content.slice(last);
+  if (rest.trim() || out.length === 0) out.push({ kind: 'text', text: rest });
+  return out;
 }
 
 function FileEditEntry({
