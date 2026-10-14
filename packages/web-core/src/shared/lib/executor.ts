@@ -10,6 +10,29 @@ import type {
 
 const RESERVED_KEYS = new Set(['recently_used_models']);
 
+// custom: each preset has a preferred executor (coding = Claude, review = Codex).
+// Picking a preset where the executor can still change switches to it,
+// as long as that executor defines the same preset.
+const PRESET_PREFERRED_EXECUTOR: Record<string, string> = {
+  DEFAULT: 'CLAUDE_CODE',
+  PLAN_FIRST: 'CLAUDE_CODE',
+  APPROVALS: 'CLAUDE_CODE',
+  ISSUE_PLANNER: 'CLAUDE_CODE',
+  REVIEW: 'CODEX',
+  FAST_REVIEW: 'CODEX',
+};
+
+export function getPreferredExecutorForPreset<T extends string>(
+  preset: string | null,
+  profiles: Record<string, unknown> | null | undefined
+): T | null {
+  if (!preset || !profiles) return null;
+  const exec = PRESET_PREFERRED_EXECUTOR[preset];
+  if (!exec) return null;
+  const profile = profiles[exec] as Record<string, unknown> | undefined;
+  return profile && preset in profile ? (exec as T) : null;
+}
+
 export function getExecutorVariantKeys(
   executorProfile: ExecutorProfile | Record<string, unknown> | null | undefined
 ): string[] {

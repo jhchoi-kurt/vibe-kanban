@@ -1,3 +1,4 @@
+import { getPreferredExecutorForPreset } from '@/shared/lib/executor';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useDropzone } from 'react-dropzone';
@@ -454,6 +455,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     setExecutor: handleExecutorChange,
     setVariant: setSelectedVariant,
     setOverrides: setExecutorOverrides,
+    setExecutorAndVariant,
   } = useExecutorConfig({
     profiles,
     lastUsedConfig: latestConfig,
@@ -942,7 +944,16 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       onAdvancedSettings={handleCustomise}
       presets={variantOptions}
       selectedPreset={selectedVariant}
-      onPresetSelect={setSelectedVariant}
+      onPresetSelect={(preset: string | null) => {
+        const preferred = needsExecutorSelection
+          ? getPreferredExecutorForPreset<BaseCodingAgent>(preset, profiles)
+          : null;
+        if (preferred && preferred !== effectiveExecutor) {
+          setExecutorAndVariant(preferred, preset);
+        } else {
+          setSelectedVariant(preset);
+        }
+      }}
       onOverrideChange={setExecutorOverrides}
       executorConfig={executorConfig}
       presetOptions={presetOptions}

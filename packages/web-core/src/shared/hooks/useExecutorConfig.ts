@@ -195,6 +195,10 @@ interface UseExecutorConfigResult {
   setExecutor: (executor: BaseCodingAgent) => void;
   setVariant: (variant: string | null) => void;
   setOverrides: (partial: Partial<ExecutorConfig>) => void;
+  setExecutorAndVariant: (
+    executor: BaseCodingAgent,
+    variant: string | null
+  ) => void;
 }
 
 /** Unified executor + variant + model selector overrides management. */
@@ -265,13 +269,17 @@ export function useExecutorConfig({
   // Clears variant + all override fields.
   const setExecutor = useCallback(
     (exec: BaseCodingAgent) => {
-      setUserSelections({ executor: exec });
-      // Persist with auto-resolved variant (no overrides)
+      // custom: keep the current preset when the new executor has it too
       const newVariants = getVariantOptions(exec, profiles);
-      const newVariant = newVariants[0] ?? null;
+      const keep =
+        variant.resolved && newVariants.includes(variant.resolved)
+          ? variant.resolved
+          : null;
+      setUserSelections(keep ? { executor: exec, variant: keep } : { executor: exec });
+      const newVariant = keep ?? newVariants[0] ?? null;
       persist({ executor: exec, variant: newVariant });
     },
-    [profiles, persist]
+    [profiles, persist, variant.resolved]
   );
 
   // Setting variant → keeps executor, sets variant, clears all override fields.
@@ -285,6 +293,15 @@ export function useExecutorConfig({
       }
     },
     [executor.effective, persist]
+  );
+
+  // custom: switch executor and preset together (preset → preferred executor).
+  const setExecutorAndVariant = useCallback(
+    (exec: BaseCodingAgent, v: string | null) => {
+      setUserSelections({ executor: exec, variant: v });
+      persist({ executor: exec, variant: v });
+    },
+    [persist]
   );
 
   // Model selector updates individual override fields (merge into existing).
@@ -318,6 +335,7 @@ export function useExecutorConfig({
     effectiveExecutor: executor.effective,
     selectedVariant: variant.resolved,
     executorOptions: executor.options,
+    setExecutorAndVariant,
     variantOptions: variant.options,
     presetOptions,
     setExecutor,

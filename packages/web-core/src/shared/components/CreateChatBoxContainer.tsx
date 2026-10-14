@@ -1,3 +1,4 @@
+import { getPreferredExecutorForPreset } from '@/shared/lib/executor';
 import { useMemo, useCallback, useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useDropzone } from 'react-dropzone';
@@ -174,9 +175,13 @@ export function CreateChatBoxContainer({
 
   const handlePresetSelect = (presetId: string | null) => {
     if (!effectiveExecutor) return;
+    const preferred = getPreferredExecutorForPreset<BaseCodingAgent>(
+      presetId,
+      profiles
+    );
     setDraftConfig({
       ...draftConfig,
-      executor: effectiveExecutor,
+      executor: preferred ?? effectiveExecutor,
       variant: presetId,
     });
   };
@@ -197,8 +202,14 @@ export function CreateChatBoxContainer({
       const variants = getSortedExecutorVariantKeys(executorProfile);
       let targetVariant: string | null = null;
 
+      // custom: keep the current preset when the new executor has it too
+      if (selectedVariant && variants.includes(selectedVariant)) {
+        targetVariant = selectedVariant;
+      }
+
       // If switching to user's default executor, use their saved variant
       if (
+        !targetVariant &&
         config?.executor_profile?.executor === executor &&
         config?.executor_profile?.variant
       ) {
@@ -217,7 +228,7 @@ export function CreateChatBoxContainer({
 
       setDraftConfig({ executor, variant: targetVariant });
     },
-    [profiles, setDraftConfig, config?.executor_profile]
+    [profiles, setDraftConfig, config?.executor_profile, selectedVariant]
   );
 
   // Handle submit
