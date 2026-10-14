@@ -16,7 +16,8 @@ use codex_app_server_protocol::{
     GetAccountParams, GetAccountRateLimitsResponse, GetAccountResponse, InitializeCapabilities,
     InitializeParams, InitializeResponse, ItemCompletedNotification, JSONRPCError,
     JSONRPCNotification, JSONRPCRequest, JSONRPCResponse, ListMcpServerStatusParams,
-    ListMcpServerStatusResponse, McpServerStatusDetail, RequestId, ReviewStartParams,
+    ListMcpServerStatusResponse, McpServerElicitationAction, McpServerElicitationRequest,
+    McpServerElicitationRequestParams, McpServerElicitationRequestResponse, McpServerStatusDetail, RequestId, ReviewStartParams,
     ReviewStartResponse, ReviewTarget, ServerRequest, ThreadCompactStartParams,
     ThreadCompactStartResponse, ThreadForkParams, ThreadForkResponse, ThreadItem, ThreadReadParams,
     ThreadReadResponse, ThreadStartParams, ThreadStartResponse, ToolRequestUserInputAnswer,
@@ -429,15 +430,59 @@ impl AppServerClient {
                 send_server_response(peer, request_id, response).await?;
                 Ok(())
             }
+            ServerRequest::McpServerElicitationRequest { request_id, params } => {
+                let response = match elicitation_kind(&params) {
+                    ElicitationKind::McpToolApproval { display_name } => {
+                        let call_id = format!("mcp_elicitation_{request_id}");
+                        let status = self
+                            .request_tool_approval("mcp", &display_name, &call_id)
+                            .await
+                            .inspect_err(|err| {
+                                if !matches!(
+                                    err,
+                                    ExecutorError::ExecutorApprovalError(
+                                        ExecutorApprovalError::Cancelled
+                                    )
+                                ) {
+                                    tracing::error!(
+                                        "Codex MCP elicitation approval failed for {display_name}: {err}"
+                                    );
+                                }
+                            });
+                        let status = match status {
+                            Ok(status) => {
+                                let _ = self
+                                    .log_writer
+                                    .log_raw(
+                                        &Approval::approval_response(
+                                            call_id,
+                                            display_name.clone(),
+                                            status.clone(),
+                                        )
+                                        .raw(),
+                                    )
+                                    .await;
+                                Some(status)
+                            }
+                            Err(_) => None,
+                        };
+                        elicitation_response_for_status(status.as_ref())
+                    }
+                    ElicitationKind::Unsupported => {
+                        tracing::warn!(
+                            "declining unsupported MCP elicitation from server={}",
+                            params.server_name
+                        );
+                        elicitation_response(McpServerElicitationAction::Decline)
+                    }
+                };
+                send_server_response(peer, request_id, response).await
+            }
             ServerRequest::ChatgptAuthTokensRefresh { .. }
-            | ServerRequest::McpServerElicitationRequest { .. }
             | ServerRequest::PermissionsRequestApproval { .. } => {
                 tracing::warn!("received unhandled v2 server request: {:?}", request);
-                let response = JSONRPCResponse {
-                    id: request.id().clone(),
-                    result: Value::Null,
-                };
-                peer.send(&response).await
+                send_method_not_supported(peer, request.id().clone(), "unsupported server request")
+                    .await
             }
             ServerRequest::ApplyPatchApproval { .. }
             | ServerRequest::ExecCommandApproval { .. } => {
@@ -849,11 +894,12 @@ impl JsonRpcCallbacks for AppServerClient {
             Ok(server_request) => self.handle_server_request(peer, server_request).await,
             Err(err) => {
                 tracing::warn!("Unhandled server request `{}`: {err}", request.method);
-                let response = JSONRPCResponse {
-                    id: request.id,
-                    result: Value::Null,
-                };
-                peer.send(&response).await
+                send_method_not_supported(
+                    peer,
+                    request.id,
+                    &format!("unsupported server request `{}`", request.method),
+                )
+                .await
             }
         }
     }
@@ -946,6 +992,76 @@ impl JsonRpcCallbacks for AppServerClient {
     }
 }
 
+async fn send_method_not_supported(
+    peer: &JsonRpcPeer,
+    id: RequestId,
+    message: &str,
+) -> Result<(), ExecutorError> {
+    let error = JSONRPCError {
+        id,
+        error: codex_app_server_protocol::JSONRPCErrorError {
+            code: -32601,
+            data: None,
+            message: message.to_string(),
+        },
+    };
+    peer.send(&error).await
+}
+
+#[derive(Debug, PartialEq)]
+enum ElicitationKind {
+    McpToolApproval { display_name: String },
+    Unsupported,
+}
+
+/// Codex (0.142+) asks MCP tool-call approvals through `mcpServer/elicitation/request`
+/// in form mode with `_meta.codex_approval_kind == "mcp_tool_call"`.
+fn elicitation_kind(params: &McpServerElicitationRequestParams) -> ElicitationKind {
+    match &params.request {
+        McpServerElicitationRequest::Form { meta, .. } => {
+            let meta = meta.as_ref();
+            let kind = meta
+                .and_then(|m| m.get("codex_approval_kind"))
+                .and_then(Value::as_str);
+            if kind == Some("mcp_tool_call") {
+                let tool = meta
+                    .and_then(|m| m.get("tool_name").or_else(|| m.get("tool")))
+                    .and_then(Value::as_str);
+                let display_name = match tool {
+                    Some(tool) => format!("mcp:{}.{}", params.server_name, tool),
+                    None => format!("mcp:{}", params.server_name),
+                };
+                ElicitationKind::McpToolApproval { display_name }
+            } else {
+                ElicitationKind::Unsupported
+            }
+        }
+        McpServerElicitationRequest::Url { .. } => ElicitationKind::Unsupported,
+    }
+}
+
+fn elicitation_response(action: McpServerElicitationAction) -> McpServerElicitationRequestResponse {
+    let content = match action {
+        McpServerElicitationAction::Accept => Some(serde_json::json!({})),
+        _ => None,
+    };
+    McpServerElicitationRequestResponse {
+        action,
+        content,
+        meta: None,
+    }
+}
+
+fn elicitation_response_for_status(
+    status: Option<&ApprovalStatus>,
+) -> McpServerElicitationRequestResponse {
+    match status {
+        Some(ApprovalStatus::Approved) => elicitation_response(McpServerElicitationAction::Accept),
+        Some(_) => elicitation_response(McpServerElicitationAction::Decline),
+        None => elicitation_response(McpServerElicitationAction::Cancel),
+    }
+}
+
 async fn send_server_response<T>(
     peer: &JsonRpcPeer,
     request_id: RequestId,
@@ -1027,5 +1143,44 @@ impl LogWriter {
         guard.write_all(b"\n").await.map_err(ExecutorError::Io)?;
         guard.flush().await.map_err(ExecutorError::Io)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod elicitation_tests {
+    use super::*;
+
+    fn params(meta: Value) -> McpServerElicitationRequestParams {
+        serde_json::from_value(serde_json::json!({
+            "threadId": "t", "turnId": "u", "serverName": "vibe_kanban",
+            "mode": "form", "_meta": meta, "message": "Allow tool?",
+            "requestedSchema": {"type": "object", "properties": {}}
+        }))
+        .expect("params parse")
+    }
+
+    #[test]
+    fn mcp_tool_call_elicitation_is_tool_approval() {
+        let p = params(serde_json::json!({"codex_approval_kind": "mcp_tool_call", "persist": "session"}));
+        assert_eq!(
+            elicitation_kind(&p),
+            ElicitationKind::McpToolApproval { display_name: "mcp:vibe_kanban".into() }
+        );
+        let p = params(serde_json::json!({"codex_approval_kind": "other"}));
+        assert_eq!(elicitation_kind(&p), ElicitationKind::Unsupported);
+    }
+
+    #[test]
+    fn elicitation_responses_are_never_null_and_roundtrip() {
+        for (status, action) in [
+            (Some(ApprovalStatus::Approved), "accept"),
+            (Some(ApprovalStatus::Denied { reason: None }), "decline"),
+            (None, "cancel"),
+        ] {
+            let r = elicitation_response_for_status(status.as_ref());
+            let v = serde_json::to_value(&r).unwrap();
+            assert_eq!(v["action"], action);
+            let _: McpServerElicitationRequestResponse = serde_json::from_value(v).unwrap();
+        }
     }
 }
