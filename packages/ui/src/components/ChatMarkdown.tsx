@@ -16,7 +16,7 @@ interface ChatMarkdownProps {
 
 export function ChatMarkdown({
   content,
-  maxWidth = '800px',
+  maxWidth = '100%',
   className,
   workspaceId,
   renderContent,
