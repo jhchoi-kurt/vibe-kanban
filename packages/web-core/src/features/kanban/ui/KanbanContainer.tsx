@@ -74,6 +74,10 @@ import type { IssuePriority } from 'shared/remote-types';
 import { useIssueMultiSelect } from '@/shared/hooks/useIssueMultiSelect';
 import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
 import { BulkActionBarContainer } from './BulkActionBarContainer';
+import { KanbanCardApprovals } from './KanbanCardApprovals';
+import { useApprovals } from '@/shared/hooks/useApprovals';
+import { executionProcessesApi, sessionsApi } from '@/shared/lib/api';
+import type { ApprovalInfo } from 'shared/types';
 
 const areStringSetsEqual = (left: string[], right: string[]): boolean => {
   if (left.length !== right.length) {
@@ -623,6 +627,63 @@ export function KanbanContainer() {
     return map;
   }, [pullRequests]);
 
+  // Pending approvals, resolved to their local workspace so they can be
+  // answered directly from the board.
+  const { pendingApprovals } = useApprovals();
+  const [approvalWorkspace, setApprovalWorkspace] = useState<
+    Record<string, string>
+  >({});
+  useEffect(() => {
+    const unresolved = pendingApprovals.filter(
+      (a) => !(a.execution_process_id in approvalWorkspace)
+    );
+    if (unresolved.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const found: Record<string, string> = {};
+      for (const a of unresolved) {
+        try {
+          const proc = await executionProcessesApi.getDetails(
+            a.execution_process_id
+          );
+          const session = await sessionsApi.getById(proc.session_id);
+          found[a.execution_process_id] = session.workspace_id;
+        } catch {
+          found[a.execution_process_id] = '';
+        }
+      }
+      if (!cancelled) setApprovalWorkspace((prev) => ({ ...prev, ...found }));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pendingApprovals, approvalWorkspace]);
+
+  const approvalsByIssueId = useMemo(() => {
+    const map = new Map<
+      string,
+      { approvals: ApprovalInfo[]; localWorkspaceId: string }
+    >();
+    if (pendingApprovals.length === 0) return map;
+    for (const issue of issues) {
+      for (const workspace of getWorkspacesForIssue(issue.id)) {
+        const localId = workspace.local_workspace_id;
+        if (workspace.archived || !localId) continue;
+        const matched = pendingApprovals.filter(
+          (a) => approvalWorkspace[a.execution_process_id] === localId
+        );
+        if (matched.length === 0) continue;
+        const entry = map.get(issue.id) ?? {
+          approvals: [],
+          localWorkspaceId: localId,
+        };
+        entry.approvals.push(...matched);
+        map.set(issue.id, entry);
+      }
+    }
+    return map;
+  }, [pendingApprovals, approvalWorkspace, issues, getWorkspacesForIssue]);
+
   // Agent activity per issue, shown as a badge on each card (independent of
   // the "show workspaces" view option).
   const agentStatusByIssueId = useMemo(() => {
@@ -1139,7 +1200,27 @@ export function KanbanContainer() {
                             dragDisabled={isMultiSelectActive}
                           >
                             {(() => {
-                              const st = agentStatusByIssueId.get(issue.id);
+                              const pending = approvalsByIssueId.get(issue.id);
+                              if (!pending) return null;
+                              return (
+                                <KanbanCardApprovals
+                                  approvals={pending.approvals}
+                                  onOpenDetails={() => {
+                                    if (projectId) {
+                                      appNavigation.goToProjectIssueWorkspace(
+                                        projectId,
+                                        issue.id,
+                                        pending.localWorkspaceId
+                                      );
+                                    }
+                                  }}
+                                />
+                              );
+                            })()}
+                            {(() => {
+                              const st = approvalsByIssueId.has(issue.id)
+                                ? null
+                                : agentStatusByIssueId.get(issue.id);
                               if (!st) return null;
                               const cfg = {
                                 approval: {
