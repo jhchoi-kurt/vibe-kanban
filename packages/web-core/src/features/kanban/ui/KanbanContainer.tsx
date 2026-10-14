@@ -516,6 +516,7 @@ export function KanbanContainer() {
   const [reviewOutcomes, setReviewOutcomes] = useState<
     Record<string, 'running' | 'pass' | 'fail'>
   >({});
+  const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
 
   // Watch a started review process until it ends, then leave an issue comment
   // with the result (failure reason + what the user must do, or a pass note).
@@ -623,6 +624,13 @@ export function KanbanContainer() {
       setReviewOutcomes((p) => ({ ...p, [issueId]: outcome }));
       try {
         await createIssueComment(issueId, message);
+        setReviewNotes((p) => ({
+          ...p,
+          [issueId]:
+            outcome === 'pass'
+              ? '✅ 리뷰 통과 · 결과를 이슈 댓글에 남겼어요'
+              : '🔴 리뷰 실패 · 원인과 할 일을 이슈 댓글에 남겼어요',
+        }));
       } catch (err) {
         setReviewErrors((prev) => ({
           ...prev,
@@ -1634,7 +1642,8 @@ export function KanbanContainer() {
                               const busy =
                                 st === 'running' ||
                                 st === 'approval' ||
-                                reviewStartingIds.has(issue.id);
+                                reviewStartingIds.has(issue.id) ||
+                                reviewOutcomes[issue.id] === 'running';
                               const err = reviewErrors[issue.id];
                               if (!target?.local_workspace_id) {
                                 return (
@@ -1673,6 +1682,17 @@ export function KanbanContainer() {
                                       상위 작업 공간의 변경분을 이 이슈 범위로 리뷰해요
                                     </span>
                                   )}
+                                  {reviewOutcomes[issue.id] === 'running' && (
+                                    <span className="text-[10px] text-blue-500">
+                                      리뷰 결과를 기다리는 중 · 끝나면 이슈 댓글로 남겨요
+                                    </span>
+                                  )}
+                                  {reviewNotes[issue.id] &&
+                                    reviewOutcomes[issue.id] !== 'running' && (
+                                      <span className="text-[10px] text-low">
+                                        {reviewNotes[issue.id]}
+                                      </span>
+                                    )}
                                   {err && (
                                     <span className="text-[10px] text-red-500">
                                       리뷰 시작 실패: {err}
