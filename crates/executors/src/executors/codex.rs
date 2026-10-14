@@ -451,7 +451,7 @@ impl StandardCodingAgentExecutor for Codex {
 
 impl Codex {
     pub fn base_command() -> &'static str {
-        "npx -y @openai/codex@0.124.0"
+        "npx -y @openai/codex@0.162.1"
     }
 
     fn build_command_builder(&self) -> Result<CommandBuilder, CommandBuildError> {
@@ -785,5 +785,134 @@ mod tests {
             (Some("gpt-5.4-mini"), false)
         );
         assert_eq!(resolve_model(None), (None, false));
+    }
+}
+
+/// Live protocol check against a real Codex binary (ignored by default).
+/// Run: CODEX_BIN=/path/to/codex cargo test -p executors codex_live -- --ignored --nocapture
+#[cfg(test)]
+mod codex_live {
+    use std::io::{BufRead, BufReader, Write};
+
+    use codex_app_server_protocol::{
+        ClientInfo, ClientRequest, InitializeParams, RequestId, TurnStartParams, UserInput,
+    };
+    use serde_json::{Value, json};
+
+    use super::{Codex, fork_params_from, jsonrpc::compat};
+
+    fn exchange(bin: &str, approval: &str) -> Vec<(i64, Value)> {
+        let mut child = std::process::Command::new(bin)
+            .arg("app-server")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn codex");
+        let mut stdin = child.stdin.take().unwrap();
+        let mut out = BufReader::new(child.stdout.take().unwrap());
+        let mut read_id = |want: i64| -> Value {
+            loop {
+                let mut line = String::new();
+                if out.read_line(&mut line).unwrap() == 0 {
+                    panic!("codex exited");
+                }
+                let v: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
+                if v.get("id").and_then(Value::as_i64) == Some(want) {
+                    return v;
+                }
+            }
+        };
+        let mut send = |req: &ClientRequest, version: Option<(u64, u64, u64)>| {
+            let mut v = serde_json::to_value(req).unwrap();
+            compat::adapt_outgoing(&mut v, version);
+            writeln!(stdin, "{}", v).unwrap();
+            stdin.flush().unwrap();
+        };
+        let mut results = Vec::new();
+        send(
+            &ClientRequest::Initialize {
+                request_id: RequestId::Integer(1),
+                params: InitializeParams {
+                    client_info: ClientInfo {
+                        name: "vibe-codex-executor".into(),
+                        title: None,
+                        version: "0.0.0".into(),
+                    },
+                    capabilities: None,
+                },
+            },
+            None,
+        );
+        let init = read_id(1);
+        let version = init["result"]["userAgent"]
+            .as_str()
+            .and_then(compat::parse_user_agent_version);
+        eprintln!("detected version {version:?}");
+        results.push((1, init));
+
+        let codex: Codex =
+            serde_json::from_value(json!({ "ask_for_approval": approval, "sandbox": "read-only" }))
+                .expect("codex config");
+        let params = codex.build_thread_start_params(std::path::Path::new("/tmp"));
+        send(
+            &ClientRequest::ThreadStart {
+                request_id: RequestId::Integer(2),
+                params: params.clone(),
+            },
+            version,
+        );
+        results.push((2, read_id(2)));
+        // Bogus thread id: a schema error (-32602 about fields) means incompatibility,
+        // a "not found"-style error means the params were accepted.
+        send(
+            &ClientRequest::TurnStart {
+                request_id: RequestId::Integer(3),
+                params: TurnStartParams {
+                    thread_id: "00000000-0000-0000-0000-000000000000".into(),
+                    input: vec![UserInput::Text {
+                        text: "noop".into(),
+                        text_elements: vec![],
+                    }],
+                    ..Default::default()
+                },
+            },
+            version,
+        );
+        results.push((3, read_id(3)));
+        send(
+            &ClientRequest::ThreadFork {
+                request_id: RequestId::Integer(4),
+                params: fork_params_from("00000000-0000-0000-0000-000000000000".into(), params),
+            },
+            version,
+        );
+        results.push((4, read_id(4)));
+        let _ = child.kill();
+        results
+    }
+
+    #[test]
+    #[ignore]
+    fn codex_live_handshake() {
+        let bin = std::env::var("CODEX_BIN").expect("CODEX_BIN");
+        for approval in ["on-request", "on-failure"] {
+            for (id, v) in exchange(&bin, approval) {
+                let msg = v["error"]["message"].as_str().unwrap_or("");
+                eprintln!(
+                    "[{approval}] id={id} ok={} err={msg}",
+                    v.get("result").is_some()
+                );
+                assert!(
+                    !msg.contains("permissionProfile")
+                        && !msg.contains("unknown variant")
+                        && !msg.contains("missing field"),
+                    "incompatible request id={id}: {msg}"
+                );
+                if id <= 2 {
+                    assert!(v.get("result").is_some(), "id={id} failed: {msg}");
+                }
+            }
+        }
     }
 }
