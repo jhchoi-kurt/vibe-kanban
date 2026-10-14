@@ -44,9 +44,51 @@ pub struct Gemini {
     pub approvals: Option<Arc<dyn ExecutorApprovalService>>,
 }
 
+// 0.64.0 passes the ACP handshake but cannot find the stored API key on this Mac
+// ("Gemini API key is missing"); keep 0.29.3 until auth is migrated.
+pub const GEMINI_DEFAULT_COMMAND: &str = "npx -y @google/gemini-cli@0.29.3";
+
+/// `--acp` replaced the deprecated `--experimental-acp` (0.64.0 accepts both, 0.29.3 only the
+/// latter). Use `--acp` only when the command pins a version known to support it; otherwise
+/// fall back to the flag every version understands.
+pub fn gemini_acp_flag(base_command: &str) -> &'static str {
+    let version = base_command
+        .split_whitespace()
+        .find_map(|tok| tok.strip_prefix("@google/gemini-cli@"))
+        .and_then(|v| {
+            let mut it = v.split(['.', '-']).map(|p| p.parse::<u64>().ok());
+            Some((it.next()??, it.next()??))
+        });
+    match version {
+        Some(v) if v >= (0, 64) => "--acp",
+        _ => "--experimental-acp",
+    }
+}
+
+#[cfg(test)]
+mod acp_flag_tests {
+    use super::gemini_acp_flag;
+    #[test]
+    fn picks_flag() {
+        assert_eq!(gemini_acp_flag("npx -y @google/gemini-cli@0.64.0"), "--acp");
+        assert_eq!(
+            gemini_acp_flag("npx -y @google/gemini-cli@0.29.3"),
+            "--experimental-acp"
+        );
+        assert_eq!(
+            gemini_acp_flag("/usr/local/bin/gemini"),
+            "--experimental-acp"
+        );
+        assert_eq!(
+            gemini_acp_flag("npx -y @google/gemini-cli@latest"),
+            "--experimental-acp"
+        );
+    }
+}
+
 impl Gemini {
     fn build_command_builder(&self) -> Result<CommandBuilder, CommandBuildError> {
-        let mut builder = CommandBuilder::new("npx -y @google/gemini-cli@0.29.3");
+        let mut builder = CommandBuilder::new(GEMINI_DEFAULT_COMMAND);
 
         if let Some(model) = &self.model {
             builder = builder.extend_params(["--model", model.as_str()]);
@@ -57,7 +99,12 @@ impl Gemini {
             builder = builder.extend_params(["--allowed-tools", "run_shell_command"]);
         }
 
-        builder = builder.extend_params(["--experimental-acp"]);
+        builder = builder.extend_params([gemini_acp_flag(
+            self.cmd
+                .base_command_override
+                .as_deref()
+                .unwrap_or(GEMINI_DEFAULT_COMMAND),
+        )]);
 
         apply_overrides(builder, &self.cmd)
     }

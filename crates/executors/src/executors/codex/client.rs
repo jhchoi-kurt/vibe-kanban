@@ -818,10 +818,37 @@ impl JsonRpcCallbacks for AppServerClient {
         request: JSONRPCRequest,
     ) -> Result<(), ExecutorError> {
         self.log_writer.log_raw(raw).await?;
-        match ServerRequest::try_from(request.clone()) {
+        // Forward compatibility: newer Codex versions may add enum variants we
+        // don't know (e.g. new `availableDecisions` entries). Retry once with
+        // those optional fields stripped before giving up.
+        let parsed = ServerRequest::try_from(request.clone()).or_else(|err| {
+            let mut relaxed = request.clone();
+            let stripped = relaxed
+                .params
+                .as_mut()
+                .and_then(Value::as_object_mut)
+                .map(|obj| {
+                    let before = obj.len();
+                    for key in ["availableDecisions", "proposedExecpolicyAmendment"] {
+                        obj.remove(key);
+                    }
+                    obj.len() != before
+                })
+                .unwrap_or(false);
+            if stripped {
+                tracing::warn!(
+                    "Server request `{}` used unknown values ({err}); retrying without optional fields",
+                    request.method
+                );
+                ServerRequest::try_from(relaxed)
+            } else {
+                Err(err)
+            }
+        });
+        match parsed {
             Ok(server_request) => self.handle_server_request(peer, server_request).await,
             Err(err) => {
-                tracing::debug!("Unhandled server request `{}`: {err}", request.method);
+                tracing::warn!("Unhandled server request `{}`: {err}", request.method);
                 let response = JSONRPCResponse {
                     id: request.id,
                     result: Value::Null,

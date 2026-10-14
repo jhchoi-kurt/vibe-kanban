@@ -61,6 +61,8 @@ pub struct JsonRpcPeer {
     stdin: Arc<Mutex<ChildStdin>>,
     pending: Arc<Mutex<HashMap<RequestId, oneshot::Sender<PendingResponse>>>>,
     id_counter: Arc<AtomicI64>,
+    /// Codex app-server version parsed from the `initialize` response userAgent.
+    server_version: Arc<std::sync::Mutex<Option<(u64, u64, u64)>>>,
 }
 
 impl JsonRpcPeer {
@@ -75,6 +77,7 @@ impl JsonRpcPeer {
             stdin: Arc::new(Mutex::new(stdin)),
             pending: Arc::new(Mutex::new(HashMap::new())),
             id_counter: Arc::new(AtomicI64::new(1)),
+            server_version: Arc::new(std::sync::Mutex::new(None)),
         };
 
         let reader_peer = peer.clone();
@@ -104,6 +107,7 @@ impl JsonRpcPeer {
                                     Ok(JSONRPCMessage::Response(response)) => {
                                         let request_id = response.id.clone();
                                         let result = response.result.clone();
+                                        reader_peer.observe_response(&result);
                                         if callbacks
                                             .on_response(&reader_peer, line, &response)
                                             .await
@@ -173,6 +177,18 @@ impl JsonRpcPeer {
         peer
     }
 
+    fn observe_response(&self, result: &Value) {
+        if let Some(ua) = result.get("userAgent").and_then(Value::as_str)
+            && let Some(v) = compat::parse_user_agent_version(ua)
+        {
+            tracing::info!("Codex app-server version detected: {}.{}.{}", v.0, v.1, v.2);
+            *self
+                .server_version
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(v);
+        }
+    }
+
     pub fn next_request_id(&self) -> RequestId {
         RequestId::Integer(self.id_counter.fetch_add(1, Ordering::Relaxed))
     }
@@ -201,7 +217,14 @@ impl JsonRpcPeer {
     where
         T: Serialize + Sync,
     {
-        let raw = serde_json::to_string(message)
+        let mut value = serde_json::to_value(message)
+            .map_err(|err| ExecutorError::Io(io::Error::other(err.to_string())))?;
+        let version = *self
+            .server_version
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        compat::adapt_outgoing(&mut value, version);
+        let raw = serde_json::to_string(&value)
             .map_err(|err| ExecutorError::Io(io::Error::other(err.to_string())))?;
         self.send_raw(&raw).await
     }
@@ -303,4 +326,88 @@ pub trait JsonRpcCallbacks: Send + Sync {
     ) -> Result<bool, ExecutorError>;
 
     async fn on_non_json(&self, _raw: &str) -> Result<(), ExecutorError>;
+}
+
+/// Forward-compatibility shims for newer Codex app-server protocol versions.
+///
+/// vibe-kanban is compiled against the 0.124 protocol types. Newer Codex binaries
+/// removed some fields/values; we patch the outgoing JSON so both old and new
+/// binaries accept it.
+pub mod compat {
+    use serde_json::Value;
+
+    /// First version known (tested) to have dropped `on-failure` approval policy.
+    /// 0.142.5 still accepts it; 0.154.0 does not.
+    pub const ON_FAILURE_REMOVED: (u64, u64, u64) = (0, 143, 0);
+
+    /// Parse `x.y.z` from a userAgent like `vibe-codex-executor/0.154.0 (Mac OS ...)`.
+    pub fn parse_user_agent_version(ua: &str) -> Option<(u64, u64, u64)> {
+        let first = ua.split_whitespace().next()?;
+        let ver = first.rsplit('/').next()?;
+        parse_version(ver)
+    }
+
+    pub fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
+        let core = s.trim().split(['-', '+']).next()?;
+        let mut it = core.split('.').map(|p| p.parse::<u64>().ok());
+        Some((
+            it.next()??,
+            it.next().flatten().unwrap_or(0),
+            it.next().flatten().unwrap_or(0),
+        ))
+    }
+
+    /// Patch an outgoing JSON-RPC message in place.
+    pub fn adapt_outgoing(msg: &mut Value, version: Option<(u64, u64, u64)>) {
+        let Some(params) = msg.get_mut("params").and_then(Value::as_object_mut) else {
+            return;
+        };
+        // `permissionProfile` was removed (0.154 rejects it even as null; 0.142 ignores it).
+        // We never set it, so drop it when null for every version.
+        if params.get("permissionProfile").is_some_and(Value::is_null) {
+            params.remove("permissionProfile");
+        }
+        let new_enough = version.is_some_and(|v| v >= ON_FAILURE_REMOVED);
+        if new_enough && params.get("approvalPolicy").and_then(Value::as_str) == Some("on-failure")
+        {
+            tracing::warn!(
+                "Codex >= 0.143 has no `on-failure` approval policy; using `on-request`"
+            );
+            params.insert("approvalPolicy".into(), Value::String("on-request".into()));
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use serde_json::json;
+
+        use super::*;
+
+        #[test]
+        fn parses_user_agent() {
+            assert_eq!(
+                parse_user_agent_version("vibe-codex-executor/0.154.0 (Mac OS 27; arm64) x"),
+                Some((0, 154, 0))
+            );
+            assert_eq!(parse_version("0.142.5-alpha.1"), Some((0, 142, 5)));
+            assert_eq!(parse_user_agent_version("garbage"), None);
+        }
+
+        #[test]
+        fn strips_null_permission_profile_and_maps_policy() {
+            let mut m = json!({"id":3,"method":"thread/start","params":{"permissionProfile":null,"approvalPolicy":"on-failure"}});
+            adapt_outgoing(&mut m, Some((0, 142, 5)));
+            assert!(m["params"].get("permissionProfile").is_none());
+            assert_eq!(m["params"]["approvalPolicy"], "on-failure");
+            adapt_outgoing(&mut m, Some((0, 154, 0)));
+            assert_eq!(m["params"]["approvalPolicy"], "on-request");
+        }
+
+        #[test]
+        fn keeps_non_null_permission_profile() {
+            let mut m = json!({"params":{"permissionProfile":{"x":1}}});
+            adapt_outgoing(&mut m, None);
+            assert!(m["params"].get("permissionProfile").is_some());
+        }
+    }
 }
