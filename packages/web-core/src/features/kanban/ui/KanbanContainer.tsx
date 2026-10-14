@@ -5,6 +5,7 @@ import {
   useEffect,
   useRef,
   type MouseEvent,
+  Fragment,
 } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useProjectContext } from '@/shared/hooks/useProjectContext';
@@ -272,6 +273,14 @@ export function KanbanContainer() {
   // A blocking issue is considered resolved when it's in:
   // - The last visible status (rightmost kanban column, e.g. "Done")
   // - Any hidden status (terminal states like "Cancelled" that don't appear as columns)
+  const firstVisibleStatusId = useMemo(
+    () =>
+      [...statuses]
+        .filter((s) => !s.hidden)
+        .sort((a, b) => a.sort_order - b.sort_order)[0]?.id,
+    [statuses]
+  );
+
   const doneStatusIds = useMemo(() => {
     const ids = new Set<string>();
     for (const s of statuses) {
@@ -284,6 +293,19 @@ export function KanbanContainer() {
     if (lastVisible) ids.add(lastVisible.id);
     return ids;
   }, [statuses]);
+
+  // Issues blocked by at least one unresolved blocking issue.
+  const blockedIssueIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const r of issueRelationships) {
+      if (r.relationship_type !== 'blocking') continue;
+      const blocker = issuesById.get(r.issue_id);
+      if (blocker && !doneStatusIds.has(blocker.status_id)) {
+        ids.add(r.related_issue_id);
+      }
+    }
+    return ids;
+  }, [issueRelationships, issuesById, doneStatusIds]);
 
   const { filteredIssues } = useKanbanFilters({
     issues,
@@ -525,10 +547,24 @@ export function KanbanContainer() {
         return sortDirection === 'desc' ? -comparison : comparison;
       });
 
+      // In the first column (To do), ready issues come before blocked ones.
+      if (status.id === firstVisibleStatusId) {
+        statusIssues = [
+          ...statusIssues.filter((i) => !blockedIssueIds.has(i.id)),
+          ...statusIssues.filter((i) => blockedIssueIds.has(i.id)),
+        ];
+      }
+
       grouped[status.id] = statusIssues.map((i) => i.id);
     }
     setItems(grouped);
-  }, [filteredIssues, statuses, kanbanFilters]);
+  }, [
+    filteredIssues,
+    statuses,
+    kanbanFilters,
+    firstVisibleStatusId,
+    blockedIssueIds,
+  ]);
 
   // Create a lookup map for issue data
   const issueMap = useMemo(() => {
@@ -984,6 +1020,13 @@ export function KanbanContainer() {
             <KanbanProvider onDragEnd={handleDragEnd}>
               {visibleStatuses.map((status) => {
                 const issueIds = items[status.id] ?? [];
+                const isSplitColumn = status.id === firstVisibleStatusId;
+                const readyCount = isSplitColumn
+                  ? issueIds.filter((id) => !blockedIssueIds.has(id)).length
+                  : 0;
+                const blockedCount = isSplitColumn
+                  ? issueIds.length - readyCount
+                  : 0;
 
                 return (
                   <KanbanBoard key={status.id}>
@@ -1027,13 +1070,35 @@ export function KanbanContainer() {
                           return !workspaceIdsShownOnCard.has(pr.workspace_id);
                         });
 
+                        const isBlockedCard =
+                          isSplitColumn && blockedIssueIds.has(issue.id);
+                        const showReadyHeader =
+                          isSplitColumn && index === 0 && blockedCount > 0;
+                        const showBlockedHeader =
+                          isSplitColumn &&
+                          isBlockedCard &&
+                          index === readyCount;
+
                         return (
+                          <Fragment key={issue.id}>
+                          {showReadyHeader && (
+                            <div className="px-base pt-half text-xs text-low">
+                              바로 시작 가능 ({readyCount})
+                            </div>
+                          )}
+                          {showBlockedHeader && (
+                            <div className="px-base pt-base text-xs text-low border-t">
+                              선행 작업 대기 ({blockedCount})
+                            </div>
+                          )}
                           <KanbanCard
                             key={issue.id}
                             id={issue.id}
                             name={issue.title}
                             index={index}
-                            className="group"
+                            className={
+                              isBlockedCard ? 'group opacity-60' : 'group'
+                            }
                             onClick={(e) => handleCardClick(issue.id, e)}
                             isOpen={selectedKanbanIssueId === issue.id}
                             isMobile={isMobile}
@@ -1116,6 +1181,7 @@ export function KanbanContainer() {
                               </div>
                             )}
                           </KanbanCard>
+                          </Fragment>
                         );
                       })}
                     </KanbanCards>
