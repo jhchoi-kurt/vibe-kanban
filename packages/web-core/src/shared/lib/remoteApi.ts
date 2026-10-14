@@ -367,3 +367,24 @@ export async function fetchAttachmentSasUrl(
   });
   return data.url;
 }
+
+/** Create an issue comment directly via the remote API (outside Electric hooks). */
+export async function createIssueComment(
+  issueId: string,
+  message: string
+): Promise<void> {
+  const response = await makeRequest('/v1/issue_comments', {
+    method: 'POST',
+    body: JSON.stringify({ issue_id: issueId, message, parent_id: null }),
+  });
+  if (!response.ok) {
+    let msg = 'Failed to create issue comment';
+    try {
+      const error = await response.json();
+      msg = error.message || msg;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg);
+  }
+}

@@ -31,8 +31,10 @@ import {
 } from '../model/hooks/useKanbanFilters';
 import {
   bulkUpdateIssues,
+  createIssueComment,
   type BulkUpdateIssueItem,
 } from '@/shared/lib/remoteApi';
+import { streamJsonPatchEntries } from '@/shared/lib/streamJsonPatchEntries';
 import { PlusIcon, DotsThreeIcon } from '@phosphor-icons/react';
 import { Actions } from '@/shared/actions';
 import {
@@ -510,6 +512,128 @@ export function KanbanContainer() {
     () => new Set()
   );
   const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({});
+  // Outcome of reviews started from the card in this browser session.
+  const [reviewOutcomes, setReviewOutcomes] = useState<
+    Record<string, 'running' | 'pass' | 'fail'>
+  >({});
+
+  // Watch a started review process until it ends, then leave an issue comment
+  // with the result (failure reason + what the user must do, or a pass note).
+  const watchReviewProcess = useCallback(
+    async (issueId: string, simpleId: string, processId: string) => {
+      setReviewOutcomes((p) => ({ ...p, [issueId]: 'running' }));
+      const deadline = Date.now() + 3 * 60 * 60 * 1000;
+      let status = 'running';
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 5000));
+        try {
+          const ep = await executionProcessesApi.getDetails(processId);
+          status = String(ep.status);
+          if (status !== 'running') break;
+        } catch {
+          /* transient; keep polling */
+        }
+      }
+      if (status === 'running') return; // gave up watching
+      type Entry = {
+        type?: string;
+        content?: { entry_type?: { type?: string }; content?: string };
+      };
+      const entries = await new Promise<Entry[]>((resolve) => {
+        const c = streamJsonPatchEntries<Entry>(
+          `/api/execution-processes/${processId}/normalized-logs/ws`,
+          {
+            onFinished: (all) => {
+              c.close();
+              resolve(all);
+            },
+            onError: () => {
+              c.close();
+              resolve([]);
+            },
+          }
+        );
+        setTimeout(() => {
+          c.close();
+          resolve([]);
+        }, 20000);
+      });
+      const norm = entries
+        .filter((e) => e?.type === 'NORMALIZED_ENTRY' && e.content)
+        .map((e) => ({
+          kind: e.content?.entry_type?.type ?? '',
+          text: (e.content?.content ?? '').trim(),
+        }));
+      const lastAssistant = [...norm]
+        .reverse()
+        .find((e) => e.kind === 'assistant_message' && e.text)?.text;
+      const errors = norm
+        .filter((e) => e.kind === 'error_message' && e.text)
+        .map((e) => e.text);
+      const truncate = (t: string, n: number) =>
+        t.length > n ? `${t.slice(0, n)}\n…(이하 생략, 리뷰 세션에서 전체 확인)` : t;
+      const execFailed =
+        status === 'failed' || status === 'killed' || !lastAssistant;
+      let message: string;
+      let outcome: 'pass' | 'fail';
+      if (execFailed) {
+        outcome = 'fail';
+        const reason =
+          errors.join('\n') ||
+          (status === 'killed'
+            ? '리뷰 프로세스가 중단(killed)되었어요.'
+            : `리뷰 프로세스가 결과 없이 종료되었어요 (상태: ${status}).`);
+        message = [
+          `⚠️ 리뷰 실행 실패 (${simpleId})`,
+          '',
+          '**원인**',
+          '```',
+          truncate(reason, 1500),
+          '```',
+          '',
+          '**👤 내가 해야 할 일**',
+          '- [ ] 원인을 확인해 주세요 (Codex 실행 파일·버전, 권한, 네트워크 등).',
+          '- [ ] 원인을 해결한 뒤 카드의 "🔍 리뷰 승인하고 시작"을 다시 눌러 주세요.',
+          '- [ ] 원인을 모르겠으면 이 댓글을 Grok Bot에게 전달해 주세요.',
+        ].join('\n');
+      } else if (lastAssistant!.startsWith('🔴')) {
+        outcome = 'fail';
+        message = [
+          `🔴 리뷰 실패 · 수정 필요 (${simpleId})`,
+          '',
+          '**리뷰 지적 사항 요약**',
+          truncate(lastAssistant!, 3000),
+          '',
+          '**👤 내가 해야 할 일**',
+          '- [ ] 위 🔴/🟡 지적 사항을 확인해 주세요.',
+          '- [ ] 작업 세션에 수정을 요청하거나(후속 요청) 직접 수정해 주세요.',
+          '- [ ] 수정이 끝나면 이슈를 In review로 옮기고 리뷰를 다시 승인해 주세요.',
+        ].join('\n');
+      } else {
+        outcome = 'pass';
+        message = [
+          `✅ 리뷰 통과 (${simpleId})`,
+          '',
+          truncate(lastAssistant!, 800),
+          '',
+          '**👤 내가 해야 할 일**',
+          '- [ ] 결과를 최종 확인하고 PR 병합 또는 Done 이동을 결정해 주세요.',
+        ].join('\n');
+      }
+      setReviewOutcomes((p) => ({ ...p, [issueId]: outcome }));
+      try {
+        await createIssueComment(issueId, message);
+      } catch (err) {
+        setReviewErrors((prev) => ({
+          ...prev,
+          [issueId]: `리뷰 결과 댓글 작성 실패: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        }));
+      }
+    },
+    []
+  );
 
   // Start a Codex REVIEW session for an issue in "In review" once the user
   // approves it on the card. Uses the issue's own workspace, or the parent
@@ -541,11 +665,11 @@ export function KanbanContainer() {
           '[이슈 설명]',
           (issue.description ?? '').slice(0, 6000),
           '[결과 형식] 첫 줄을 `✅ 리뷰 통과` 또는 `🔴 수정 필요`로 시작하고, 지적 사항을 심각도(🔴/🟡/🟢)별 표로 정리한다.',
-          '[상태 처리] 수정 필요이면 칸반 도구로 이 이슈를 In progress로 옮기고 지적 사항 요약을 남긴다. 통과이면 상태는 바꾸지 않는다(사람이 최종 확인).',
+          '[상태 처리] 수정 필요이면 칸반 도구로 이 이슈를 In progress로 옮긴다. 통과이면 상태는 바꾸지 않는다(사람이 최종 확인). 이슈 댓글은 칸반 화면이 최종 응답을 읽어 자동으로 남기므로, 최종 응답에 지적 사항 요약과 "👤 내가 해야 할 일" 체크리스트를 반드시 포함한다.',
         ]
           .filter(Boolean)
           .join('\n');
-        await sessionsApi.startReview(session.id, {
+        const reviewProcess = await sessionsApi.startReview(session.id, {
           executor_config: {
             executor: BaseCodingAgent.CODEX,
             variant: 'REVIEW',
@@ -554,7 +678,9 @@ export function KanbanContainer() {
           additional_prompt: additional,
           use_all_workspace_commits: true,
         });
+        void watchReviewProcess(issue.id, issue.simple_id, reviewProcess.id);
       } catch (err) {
+        setReviewOutcomes((p) => ({ ...p, [issue.id]: 'fail' }));
         setReviewErrors((prev) => ({
           ...prev,
           [issue.id]: err instanceof Error ? err.message : '리뷰 시작 실패',
@@ -567,72 +693,9 @@ export function KanbanContainer() {
         });
       }
     },
-    []
+    [watchReviewProcess]
   );
 
-  // Sync items from filtered issues when they change
-  useEffect(() => {
-    // Skip rebuild during drag-drop sync to prevent flicker
-    if (isSyncingRef.current) {
-      return;
-    }
-
-    const { sortField, sortDirection } = kanbanFilters;
-    const grouped: Record<string, string[]> = {};
-
-    for (const status of statuses) {
-      // Filter issues for this status
-      let statusIssues = filteredIssues.filter(
-        (i) => i.status_id === status.id
-      );
-
-      // Sort within column based on user preference
-      statusIssues = [...statusIssues].sort((a, b) => {
-        let comparison = 0;
-        switch (sortField) {
-          case 'priority':
-            comparison =
-              (a.priority ? PRIORITY_ORDER[a.priority] : Infinity) -
-              (b.priority ? PRIORITY_ORDER[b.priority] : Infinity);
-            break;
-          case 'created_at':
-            comparison =
-              new Date(a.created_at).getTime() -
-              new Date(b.created_at).getTime();
-            break;
-          case 'updated_at':
-            comparison =
-              new Date(a.updated_at).getTime() -
-              new Date(b.updated_at).getTime();
-            break;
-          case 'title':
-            comparison = a.title.localeCompare(b.title);
-            break;
-          case 'sort_order':
-          default:
-            comparison = a.sort_order - b.sort_order;
-        }
-        return sortDirection === 'desc' ? -comparison : comparison;
-      });
-
-      // In the first column (To do), ready issues come before blocked ones.
-      if (status.id === firstVisibleStatusId) {
-        statusIssues = [
-          ...statusIssues.filter((i) => !blockedIssueIds.has(i.id)),
-          ...statusIssues.filter((i) => blockedIssueIds.has(i.id)),
-        ];
-      }
-
-      grouped[status.id] = statusIssues.map((i) => i.id);
-    }
-    setItems(grouped);
-  }, [
-    filteredIssues,
-    statuses,
-    kanbanFilters,
-    firstVisibleStatusId,
-    blockedIssueIds,
-  ]);
 
   // Create a lookup map for issue data
   const issueMap = useMemo(() => {
@@ -786,6 +849,130 @@ export function KanbanContainer() {
     }
     return map;
   }, [issues, getWorkspacesForIssue, localWorkspacesById]);
+
+  // Issues needing the user's action (approval, decision, result check,
+  // open PR, review to approve, failed process/review).
+  const actionNeededIssueIds = useMemo(() => {
+    const set = new Set<string>();
+    const needs = (st: string | undefined) =>
+      st === 'approval' || st === 'input' || st === 'failed' || st === 'done';
+    const hasLocalWs = (id: string) =>
+      getWorkspacesForIssue(id).some(
+        (w) => !w.archived && !!w.local_workspace_id
+      );
+    for (const issue of issues) {
+      const id = issue.id;
+      const own = agentStatusByIssueId.get(id);
+      const statusName =
+        statuses.find((x) => x.id === issue.status_id)?.name ?? '';
+      const parentSt = issue.parent_issue_id
+        ? agentStatusByIssueId.get(issue.parent_issue_id)
+        : undefined;
+      const reviewBusy =
+        reviewStartingIds.has(id) ||
+        reviewOutcomes[id] === 'running' ||
+        own === 'running' ||
+        (!own && parentSt === 'running');
+      if (
+        approvalsByIssueId.has(id) ||
+        needs(own) ||
+        reviewOutcomes[id] === 'fail' ||
+        getPullRequestsForIssue(id).some(
+          (pr) => String(pr.status) !== 'merged' && String(pr.status) !== 'closed'
+        ) ||
+        (!own && !approvalsByIssueId.has(id) && needs(parentSt)) ||
+        (/review/i.test(statusName) &&
+          !reviewBusy &&
+          (hasLocalWs(id) ||
+            (!!issue.parent_issue_id && hasLocalWs(issue.parent_issue_id))))
+      )
+        set.add(id);
+    }
+    return set;
+  }, [
+    issues,
+    statuses,
+    agentStatusByIssueId,
+    approvalsByIssueId,
+    getPullRequestsForIssue,
+    getWorkspacesForIssue,
+    reviewStartingIds,
+    reviewOutcomes,
+  ]);
+
+  // Sync items from filtered issues when they change
+  useEffect(() => {
+    // Skip rebuild during drag-drop sync to prevent flicker
+    if (isSyncingRef.current) {
+      return;
+    }
+
+    const { sortField, sortDirection } = kanbanFilters;
+    const grouped: Record<string, string[]> = {};
+
+    for (const status of statuses) {
+      // Filter issues for this status
+      let statusIssues = filteredIssues.filter(
+        (i) => i.status_id === status.id
+      );
+
+      // Sort within column based on user preference
+      statusIssues = [...statusIssues].sort((a, b) => {
+        let comparison = 0;
+        switch (sortField) {
+          case 'priority':
+            comparison =
+              (a.priority ? PRIORITY_ORDER[a.priority] : Infinity) -
+              (b.priority ? PRIORITY_ORDER[b.priority] : Infinity);
+            break;
+          case 'created_at':
+            comparison =
+              new Date(a.created_at).getTime() -
+              new Date(b.created_at).getTime();
+            break;
+          case 'updated_at':
+            comparison =
+              new Date(a.updated_at).getTime() -
+              new Date(b.updated_at).getTime();
+            break;
+          case 'title':
+            comparison = a.title.localeCompare(b.title);
+            break;
+          case 'sort_order':
+          default:
+            comparison = a.sort_order - b.sort_order;
+        }
+        return sortDirection === 'desc' ? -comparison : comparison;
+      });
+
+      // Cards that need the user's action always float to the top
+      // (stable: original order is kept within each group).
+      const actionFirst = (list: typeof statusIssues) => [
+        ...list.filter((i) => actionNeededIssueIds.has(i.id)),
+        ...list.filter((i) => !actionNeededIssueIds.has(i.id)),
+      ];
+
+      // In the first column (To do), ready issues come before blocked ones.
+      if (status.id === firstVisibleStatusId) {
+        statusIssues = [
+          ...actionFirst(statusIssues.filter((i) => !blockedIssueIds.has(i.id))),
+          ...actionFirst(statusIssues.filter((i) => blockedIssueIds.has(i.id))),
+        ];
+      } else {
+        statusIssues = actionFirst(statusIssues);
+      }
+
+      grouped[status.id] = statusIssues.map((i) => i.id);
+    }
+    setItems(grouped);
+  }, [
+    filteredIssues,
+    statuses,
+    kanbanFilters,
+    firstVisibleStatusId,
+    blockedIssueIds,
+    actionNeededIssueIds,
+  ]);
 
   const workspacesByIssueId = useMemo(() => {
     if (!showWorkspaces) {
@@ -1287,6 +1474,11 @@ export function KanbanContainer() {
                                 />
                               );
                             })()}
+                            {actionNeededIssueIds.has(issue.id) && (
+                              <div className="mb-half inline-flex rounded-sm bg-orange-500/25 px-half py-[1px] text-xs font-semibold text-orange-700 dark:text-orange-200">
+                                👤 내 액션 필요
+                              </div>
+                            )}
                             {(() => {
                               const st = approvalsByIssueId.has(issue.id)
                                 ? null
