@@ -873,6 +873,8 @@ export function KanbanContainer() {
       const own = agentStatusByIssueId.get(id);
       const statusName =
         statuses.find((x) => x.id === issue.status_id)?.name ?? '';
+      // Finished/cancelled issues never need action.
+      if (/done|complete|cancel|완료|취소/i.test(statusName)) continue;
       const parentSt = issue.parent_issue_id
         ? agentStatusByIssueId.get(issue.parent_issue_id)
         : undefined;
