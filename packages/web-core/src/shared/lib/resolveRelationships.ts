@@ -50,14 +50,14 @@ export function getRelationshipLabel(
 ): string {
   switch (displayType) {
     case 'blocks':
-      return 'blocks';
+      return '먼저 처리해야 할 후속 작업';
     case 'blocked_by':
-      return 'blocked by';
+      return '먼저 처리되어야 할 선행 작업';
     case 'related':
-      return 'related';
+      return '관련 작업';
     case 'duplicate_of':
-      return 'dup of';
+      return '중복 원본';
     case 'duplicated_by':
-      return 'dup';
+      return '중복 작업';
   }
 }

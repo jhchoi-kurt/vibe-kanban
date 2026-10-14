@@ -31,18 +31,21 @@ const RELATIONSHIP_ICONS = {
   duplicated_by: CopyIcon,
 } as const;
 
-function getRelationshipLabel(displayType: RelationshipDisplayType): string {
+export function getRelationshipSentence(
+  displayType: RelationshipDisplayType,
+  id: string
+): string {
   switch (displayType) {
     case 'blocks':
-      return 'blocks';
+      return `이 작업은 ${id}보다 먼저 처리되어야 합니다`;
     case 'blocked_by':
-      return 'blocked by';
+      return `이 작업 전에 ${id}이 먼저 처리되어야 합니다`;
     case 'related':
-      return 'related';
+      return `${id}와(과) 관련된 작업입니다`;
     case 'duplicate_of':
-      return 'dup of';
+      return `이 작업은 ${id}의 중복입니다`;
     case 'duplicated_by':
-      return 'dup';
+      return `${id}이(가) 이 작업의 중복입니다`;
   }
 }
 
@@ -54,13 +57,17 @@ export function RelationshipBadge({
   onClick,
 }: RelationshipBadgeProps) {
   const Icon = RELATIONSHIP_ICONS[displayType];
-  const label = getRelationshipLabel(displayType);
+  const sentence = getRelationshipSentence(
+    displayType,
+    relatedIssueDisplayId
+  );
   const isBlocking = displayType === 'blocks' || displayType === 'blocked_by';
 
   return (
     <span
       role={onClick ? 'button' : undefined}
       tabIndex={onClick ? 0 : undefined}
+      title={sentence}
       onClick={onClick}
       onKeyDown={
         onClick
@@ -85,7 +92,7 @@ export function RelationshipBadge({
     >
       <Icon className="size-icon-xs" weight="bold" />
       <span>
-        {compact ? relatedIssueDisplayId : `${label} ${relatedIssueDisplayId}`}
+        {compact ? relatedIssueDisplayId : sentence}
       </span>
     </span>
   );
