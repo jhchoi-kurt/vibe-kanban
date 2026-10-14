@@ -77,6 +77,7 @@ import { useIssueMultiSelect } from '@/shared/hooks/useIssueMultiSelect';
 import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
 import { BulkActionBarContainer } from './BulkActionBarContainer';
 import { KanbanCardApprovals } from './KanbanCardApprovals';
+import { UnlinkedWorkspacesSection } from './UnlinkedWorkspacesSection';
 import { useApprovals } from '@/shared/hooks/useApprovals';
 import { executionProcessesApi, sessionsApi } from '@/shared/lib/api';
 import type { ApprovalInfo } from 'shared/types';
@@ -1370,6 +1371,8 @@ export function KanbanContainer() {
           />
         </div>
       </div>
+
+      <UnlinkedWorkspacesSection />
 
       {kanbanViewMode === 'kanban' ? (
         visibleStatuses.length === 0 ? (
