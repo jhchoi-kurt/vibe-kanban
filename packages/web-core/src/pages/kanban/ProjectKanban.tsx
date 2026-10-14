@@ -150,7 +150,7 @@ function ProjectKanbanLayout({ projectName }: { projectName: string }) {
     >
       <Panel
         id="kanban-left"
-        minSize="20%"
+        minSize="5%"
         className="min-w-0 h-full overflow-hidden bg-primary"
       >
         <ProjectKanbanBoard />
@@ -167,7 +167,6 @@ function ProjectKanbanLayout({ projectName }: { projectName: string }) {
         <Panel
           id="kanban-right"
           minSize="400px"
-          maxSize="800px"
           className="min-w-0 h-full overflow-hidden bg-secondary"
         >
           <ProjectRightSidebarContainer />

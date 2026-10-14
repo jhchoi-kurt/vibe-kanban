@@ -282,7 +282,7 @@ function WorkspaceSessionPanel({
 
               {workspaceWithSession ? (
                 <div className="flex flex-1 min-h-0 overflow-hidden justify-center">
-                  <div className="w-chat max-w-full h-full">
+                  <div className="w-full max-w-full h-full px-base">
                     <RetryUiProvider workspaceId={workspaceWithSession.id}>
                       <ConversationList
                         key={`${workspaceId}-${selectedSessionId ?? 'new'}`}
@@ -300,7 +300,7 @@ function WorkspaceSessionPanel({
 
               {workspaceWithSession && !isAtBottom && (
                 <div className="flex justify-center pointer-events-none">
-                  <div className="w-chat max-w-full relative">
+                  <div className="w-full max-w-full relative">
                     <button
                       type="button"
                       onClick={() => handleScrollToBottom('auto')}
