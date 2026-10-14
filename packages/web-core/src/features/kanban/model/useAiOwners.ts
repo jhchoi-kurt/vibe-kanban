@@ -36,7 +36,7 @@ export function formatAiOwner(o: AiOwner): string {
 }
 
 /** Read the initial snapshot of a session's execution processes, then close. */
-function fetchSessionProcesses(sessionId: string): Promise<ExecutionProcess[]> {
+export function fetchSessionProcesses(sessionId: string): Promise<ExecutionProcess[]> {
   return new Promise((resolve) => {
     let ws: WebSocket | null = null;
     let done = false;

@@ -35,6 +35,11 @@ import {
   type BulkUpdateIssueItem,
 } from '@/shared/lib/remoteApi';
 import { streamJsonPatchEntries } from '@/shared/lib/streamJsonPatchEntries';
+import { markFailureCommented } from '@/shared/lib/issueFailureComments';
+import {
+  useRunFailureComments,
+  type RunWatchTarget,
+} from '@/features/kanban/model/useRunFailureComments';
 import { PlusIcon, DotsThreeIcon } from '@phosphor-icons/react';
 import { Actions } from '@/shared/actions';
 import {
@@ -538,6 +543,8 @@ export function KanbanContainer() {
         }
       }
       if (status === 'running') return; // gave up watching
+      // the generic run-failure watcher must not comment this process again
+      markFailureCommented(`proc:${processId}`);
       type Entry = {
         type?: string;
         content?: { entry_type?: { type?: string }; content?: string };
@@ -895,6 +902,26 @@ export function KanbanContainer() {
     }
     return map;
   }, [issues, getWorkspacesForIssue, localWorkspacesById]);
+  // Any agent run linked to an issue that ends failed -> "⚠️ 실행 실패" comment.
+  const runWatchTargets = useMemo(() => {
+    const out: RunWatchTarget[] = [];
+    for (const issue of issues) {
+      for (const w of getWorkspacesForIssue(issue.id)) {
+        if (w.archived || !w.local_workspace_id) continue;
+        const local = localWorkspacesById.get(w.local_workspace_id);
+        if (!local) continue;
+        out.push({
+          issueId: issue.id,
+          simpleId: issue.simple_id,
+          workspaceId: local.id,
+          latestProcessStatus: local.latestProcessStatus,
+          latestProcessCompletedAt: local.latestProcessCompletedAt,
+        });
+      }
+    }
+    return out;
+  }, [issues, getWorkspacesForIssue, localWorkspacesById]);
+  useRunFailureComments(runWatchTargets);
   const aiOwners = useAiOwners(
     [...aiWorkspaceByIssueId.values()].map((v) => v.wsId),
     activeWorkspaces

@@ -257,6 +257,7 @@ export function CreateChatBoxContainer({
       ? {
           remoteProjectId: linkedIssue.remoteProjectId,
           issueId: linkedIssue.issueId,
+          simpleId: linkedIssue.simpleId ?? undefined,
         }
       : undefined;
 
