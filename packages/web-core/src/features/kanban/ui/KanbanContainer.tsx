@@ -78,6 +78,7 @@ import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
 import { BulkActionBarContainer } from './BulkActionBarContainer';
 import { KanbanCardApprovals } from './KanbanCardApprovals';
 import { UnlinkedWorkspacesSection } from './UnlinkedWorkspacesSection';
+import { useAiOwners, formatAiOwner } from '../model/useAiOwners';
 import { useApprovals } from '@/shared/hooks/useApprovals';
 import { executionProcessesApi, sessionsApi } from '@/shared/lib/api';
 import type { ApprovalInfo } from 'shared/types';
@@ -573,7 +574,9 @@ export function KanbanContainer() {
         .filter((e) => e.kind === 'error_message' && e.text)
         .map((e) => e.text);
       const truncate = (t: string, n: number) =>
-        t.length > n ? `${t.slice(0, n)}\n…(이하 생략, 리뷰 세션에서 전체 확인)` : t;
+        t.length > n
+          ? `${t.slice(0, n)}\n…(이하 생략, 리뷰 세션에서 전체 확인)`
+          : t;
       const execFailed =
         status === 'failed' || status === 'killed' || !lastAssistant;
       let message: string;
@@ -649,7 +652,12 @@ export function KanbanContainer() {
   // issue's workspace when the sub-issue was handled there.
   const startIssueReview = useCallback(
     async (
-      issue: { id: string; simple_id: string; title: string; description?: string | null },
+      issue: {
+        id: string;
+        simple_id: string;
+        title: string;
+        description?: string | null;
+      },
       localWorkspaceId: string,
       viaParent: boolean
     ) => {
@@ -704,7 +712,6 @@ export function KanbanContainer() {
     },
     [watchReviewProcess]
   );
-
 
   // Create a lookup map for issue data
   const issueMap = useMemo(() => {
@@ -859,6 +866,65 @@ export function KanbanContainer() {
     return map;
   }, [issues, getWorkspacesForIssue, localWorkspacesById]);
 
+  // AI owner chip: latest coding-agent session of the issue's own workspace
+  // (or the parent's, dimmed, for sub-issues without their own).
+  const aiWorkspaceByIssueId = useMemo(() => {
+    const own = new Map<string, string>();
+    for (const issue of issues) {
+      let best: { id: string; t: number } | null = null;
+      for (const w of getWorkspacesForIssue(issue.id)) {
+        if (w.archived || !w.local_workspace_id) continue;
+        const local = localWorkspacesById.get(w.local_workspace_id);
+        if (!local) continue;
+        const t = new Date(
+          local.latestProcessCompletedAt ?? local.updatedAt
+        ).getTime();
+        if (!best || t > best.t) best = { id: local.id, t };
+      }
+      if (best) own.set(issue.id, best.id);
+    }
+    const map = new Map<string, { wsId: string; inherited: boolean }>();
+    for (const issue of issues) {
+      const o = own.get(issue.id);
+      if (o) map.set(issue.id, { wsId: o, inherited: false });
+      else if (issue.parent_issue_id && own.get(issue.parent_issue_id))
+        map.set(issue.id, {
+          wsId: own.get(issue.parent_issue_id)!,
+          inherited: true,
+        });
+    }
+    return map;
+  }, [issues, getWorkspacesForIssue, localWorkspacesById]);
+  const aiOwners = useAiOwners(
+    [...aiWorkspaceByIssueId.values()].map((v) => v.wsId),
+    activeWorkspaces
+      .map(
+        (w) => `${w.id}:${w.isRunning ? 1 : 0}:${w.latestProcessStatus ?? ''}`
+      )
+      .join('|')
+  );
+  const renderAiChip = (issueId: string) => {
+    const ref = aiWorkspaceByIssueId.get(issueId);
+    const owner = ref ? aiOwners.get(ref.wsId) : undefined;
+    if (!ref || !owner) return undefined;
+    return (
+      <span
+        className={cn(
+          'inline-flex max-w-full truncate rounded-sm bg-brand/15 px-half py-[1px] text-xs font-medium text-brand',
+          ref.inherited && 'opacity-50'
+        )}
+        title={
+          ref.inherited
+            ? 'AI 담당 (상위 작업 공간의 최근 세션)'
+            : 'AI 담당 (이 이슈 작업 공간의 최근 세션)'
+        }
+      >
+        {formatAiOwner(owner)}
+        {ref.inherited ? ' · 상위' : ''}
+      </span>
+    );
+  };
+
   // Issues needing the user's action (approval, decision, result check,
   // open PR, review to approve, failed process/review).
   const actionNeededIssueIds = useMemo(() => {
@@ -889,7 +955,8 @@ export function KanbanContainer() {
         needs(own) ||
         reviewOutcomes[id] === 'fail' ||
         getPullRequestsForIssue(id).some(
-          (pr) => String(pr.status) !== 'merged' && String(pr.status) !== 'closed'
+          (pr) =>
+            String(pr.status) !== 'merged' && String(pr.status) !== 'closed'
         ) ||
         (!own && !approvalsByIssueId.has(id) && needs(parentSt)) ||
         (/review/i.test(statusName) &&
@@ -966,7 +1033,9 @@ export function KanbanContainer() {
       // In the first column (To do), ready issues come before blocked ones.
       if (status.id === firstVisibleStatusId) {
         statusIssues = [
-          ...actionFirst(statusIssues.filter((i) => !blockedIssueIds.has(i.id))),
+          ...actionFirst(
+            statusIssues.filter((i) => !blockedIssueIds.has(i.id))
+          ),
           ...actionFirst(statusIssues.filter((i) => blockedIssueIds.has(i.id))),
         ];
       } else {
@@ -1445,343 +1514,355 @@ export function KanbanContainer() {
 
                         return (
                           <Fragment key={issue.id}>
-                          {showReadyHeader && (
-                            <div className="px-base pt-half text-xs text-low">
-                              바로 시작 가능 ({readyCount})
-                            </div>
-                          )}
-                          {showBlockedHeader && (
-                            <div className="px-base pt-base text-xs text-low border-t">
-                              선행 작업 대기 ({blockedCount})
-                            </div>
-                          )}
-                          <KanbanCard
-                            key={issue.id}
-                            id={issue.id}
-                            name={issue.title}
-                            index={index}
-                            className={
-                              isBlockedCard ? 'group opacity-60' : 'group'
-                            }
-                            onClick={(e) => handleCardClick(issue.id, e)}
-                            isOpen={selectedKanbanIssueId === issue.id}
-                            isMobile={isMobile}
-                            isSelected={selectedIssueIds.has(issue.id)}
-                            dragDisabled={isMultiSelectActive}
-                          >
-                            {(() => {
-                              const pending = approvalsByIssueId.get(issue.id);
-                              if (!pending) return null;
-                              return (
-                                <KanbanCardApprovals
-                                  approvals={pending.approvals}
-                                  onOpenDetails={() => {
-                                    if (projectId) {
-                                      appNavigation.goToProjectIssueWorkspace(
-                                        projectId,
-                                        issue.id,
-                                        pending.localWorkspaceId
-                                      );
-                                    }
-                                  }}
-                                />
-                              );
-                            })()}
-                            {actionNeededIssueIds.has(issue.id) && (
-                              <div className="mb-half inline-flex rounded-sm bg-orange-500/25 px-half py-[1px] text-xs font-semibold text-orange-700 dark:text-orange-200">
-                                👤 내 액션 필요
+                            {showReadyHeader && (
+                              <div className="px-base pt-half text-xs text-low">
+                                바로 시작 가능 ({readyCount})
                               </div>
                             )}
-                            {(() => {
-                              const st = approvalsByIssueId.has(issue.id)
-                                ? null
-                                : agentStatusByIssueId.get(issue.id);
-                              if (!st) return null;
-                              const cfg = {
-                                approval: {
-                                  label: '⚠ 승인 필요',
-                                  cls: 'bg-orange-500/20 text-orange-600 dark:text-orange-300',
-                                },
-                                input: {
-                                  label: '🟠 결정 필요 · 답변 대기',
-                                  cls: 'bg-orange-500/20 text-orange-600 dark:text-orange-300',
-                                },
-                                running: {
-                                  label: '● 에이전트 작업 중',
-                                  cls: 'bg-blue-500/20 text-blue-600 dark:text-blue-300 animate-pulse',
-                                },
-                                failed: {
-                                  label: '✕ 실패·중단됨',
-                                  cls: 'bg-red-500/20 text-red-600 dark:text-red-300',
-                                },
-                                done: {
-                                  label: '✓ 응답 완료 · 결과 확인',
-                                  cls: 'bg-green-500/15 text-green-700 dark:text-green-300',
-                                },
-                              }[st];
-                              return (
-                                <div
-                                  className={`mb-half inline-flex rounded-sm px-half py-[1px] text-xs font-medium ${cfg.cls}`}
-                                >
-                                  {cfg.label}
-                                </div>
-                              );
-                            })()}
-                            {(() => {
-                              // Sub-issue without its own agent work: point to
-                              // the parent issue's workspace when that one is
-                              // waiting for review or a decision.
-                              if (
-                                !issue.parent_issue_id ||
-                                agentStatusByIssueId.has(issue.id) ||
-                                approvalsByIssueId.has(issue.id)
-                              )
-                                return null;
-                              const parentId = issue.parent_issue_id;
-                              const pst = agentStatusByIssueId.get(parentId);
-                              if (!pst) return null;
-                              const parent = issuesById.get(parentId);
-                              const parentWs = getWorkspacesForIssue(
-                                parentId
-                              ).find(
-                                (w) => !w.archived && !!w.local_workspace_id
-                              );
-                              const label = {
-                                approval: '상위 작업에서 승인 필요',
-                                input: '상위 작업에서 결정 필요',
-                                running: '상위 작업에서 진행 중',
-                                failed: '상위 작업이 실패·중단됨',
-                                done: '상위 작업 완료 · 결과 확인 필요',
-                              }[pst];
-                              const cls =
-                                pst === 'running'
-                                  ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
-                                  : pst === 'failed'
-                                    ? 'bg-red-500/10 text-red-600 dark:text-red-300'
-                                    : 'bg-orange-500/15 text-orange-600 dark:text-orange-300';
-                              return (
-                                <button
-                                  type="button"
-                                  className={`mb-half inline-flex rounded-sm px-half py-[1px] text-left text-xs font-medium hover:underline ${cls}`}
-                                  title="클릭하면 상위 작업의 결과 화면으로 이동해요"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    if (projectId && parentWs?.local_workspace_id) {
-                                      appNavigation.goToProjectIssueWorkspace(
-                                        projectId,
-                                        parentId,
-                                        parentWs.local_workspace_id
-                                      );
-                                    }
-                                  }}
-                                >
-                                  ↑ {parent?.simple_id ?? '상위'} {label} →
-                                </button>
-                              );
-                            })()}
-                            {(() => {
-                              const prs = getPullRequestsForIssue(issue.id);
-                              if (prs.length === 0) return null;
-                              return (
-                                <div className="mb-half flex flex-wrap gap-half">
-                                  {prs.map((pr) => {
-                                    const st = String(pr.status);
-                                    const cfg =
-                                      st === 'merged'
-                                        ? {
-                                            label: `✓ PR #${pr.number} 병합됨`,
-                                            cls: 'bg-purple-500/15 text-purple-600 dark:text-purple-300',
-                                          }
-                                        : st === 'closed'
-                                          ? {
-                                              label: `PR #${pr.number} 닫힘`,
-                                              cls: 'bg-panel text-low',
-                                            }
-                                          : {
-                                              label: `🔀 PR #${pr.number} 리뷰·병합 필요`,
-                                              cls: 'bg-orange-500/20 text-orange-600 dark:text-orange-300',
-                                            };
-                                    return (
-                                      <a
-                                        key={pr.url}
-                                        href={pr.url}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        title="GitHub에서 PR 열기"
-                                        onClick={(e) => e.stopPropagation()}
-                                        className={`inline-flex rounded-sm px-half py-[1px] text-xs font-medium hover:underline ${cfg.cls}`}
-                                      >
-                                        {cfg.label} ↗
-                                      </a>
-                                    );
-                                  })}
-                                </div>
-                              );
-                            })()}
-                            {(() => {
-                              const statusName =
-                                sortedStatuses.find(
-                                  (x) => x.id === issue.status_id
-                                )?.name ?? '';
-                              if (!/review/i.test(statusName)) return null;
-                              const own = getWorkspacesForIssue(issue.id).find(
-                                (w) => !w.archived && !!w.local_workspace_id
-                              );
-                              const parentWs =
-                                !own && issue.parent_issue_id
-                                  ? getWorkspacesForIssue(
-                                      issue.parent_issue_id
-                                    ).find(
-                                      (w) =>
-                                        !w.archived && !!w.local_workspace_id
-                                    )
-                                  : undefined;
-                              const target = own ?? parentWs;
-                              const st =
-                                agentStatusByIssueId.get(issue.id) ??
-                                (parentWs && issue.parent_issue_id
-                                  ? agentStatusByIssueId.get(
-                                      issue.parent_issue_id
-                                    )
-                                  : undefined);
-                              const busy =
-                                st === 'running' ||
-                                st === 'approval' ||
-                                reviewStartingIds.has(issue.id) ||
-                                reviewOutcomes[issue.id] === 'running';
-                              const err = reviewErrors[issue.id];
-                              if (!target?.local_workspace_id) {
+                            {showBlockedHeader && (
+                              <div className="px-base pt-base text-xs text-low border-t">
+                                선행 작업 대기 ({blockedCount})
+                              </div>
+                            )}
+                            <KanbanCard
+                              key={issue.id}
+                              id={issue.id}
+                              name={issue.title}
+                              index={index}
+                              className={
+                                isBlockedCard ? 'group opacity-60' : 'group'
+                              }
+                              onClick={(e) => handleCardClick(issue.id, e)}
+                              isOpen={selectedKanbanIssueId === issue.id}
+                              isMobile={isMobile}
+                              isSelected={selectedIssueIds.has(issue.id)}
+                              dragDisabled={isMultiSelectActive}
+                            >
+                              {(() => {
+                                const pending = approvalsByIssueId.get(
+                                  issue.id
+                                );
+                                if (!pending) return null;
                                 return (
-                                  <div className="mb-half rounded-sm bg-panel px-half py-[1px] text-xs text-low">
-                                    🔍 리뷰할 작업 공간이 없어요(PR 또는 상위 작업 연결 필요)
+                                  <KanbanCardApprovals
+                                    approvals={pending.approvals}
+                                    onOpenDetails={() => {
+                                      if (projectId) {
+                                        appNavigation.goToProjectIssueWorkspace(
+                                          projectId,
+                                          issue.id,
+                                          pending.localWorkspaceId
+                                        );
+                                      }
+                                    }}
+                                  />
+                                );
+                              })()}
+                              {actionNeededIssueIds.has(issue.id) && (
+                                <div className="mb-half inline-flex rounded-sm bg-orange-500/25 px-half py-[1px] text-xs font-semibold text-orange-700 dark:text-orange-200">
+                                  👤 내 액션 필요
+                                </div>
+                              )}
+                              {(() => {
+                                const st = approvalsByIssueId.has(issue.id)
+                                  ? null
+                                  : agentStatusByIssueId.get(issue.id);
+                                if (!st) return null;
+                                const cfg = {
+                                  approval: {
+                                    label: '⚠ 승인 필요',
+                                    cls: 'bg-orange-500/20 text-orange-600 dark:text-orange-300',
+                                  },
+                                  input: {
+                                    label: '🟠 결정 필요 · 답변 대기',
+                                    cls: 'bg-orange-500/20 text-orange-600 dark:text-orange-300',
+                                  },
+                                  running: {
+                                    label: '● 에이전트 작업 중',
+                                    cls: 'bg-blue-500/20 text-blue-600 dark:text-blue-300 animate-pulse',
+                                  },
+                                  failed: {
+                                    label: '✕ 실패·중단됨',
+                                    cls: 'bg-red-500/20 text-red-600 dark:text-red-300',
+                                  },
+                                  done: {
+                                    label: '✓ 응답 완료 · 결과 확인',
+                                    cls: 'bg-green-500/15 text-green-700 dark:text-green-300',
+                                  },
+                                }[st];
+                                return (
+                                  <div
+                                    className={`mb-half inline-flex rounded-sm px-half py-[1px] text-xs font-medium ${cfg.cls}`}
+                                  >
+                                    {cfg.label}
                                   </div>
                                 );
-                              }
-                              const wsId = target.local_workspace_id;
-                              return (
-                                <div className="mb-half flex flex-col gap-[2px]">
+                              })()}
+                              {(() => {
+                                // Sub-issue without its own agent work: point to
+                                // the parent issue's workspace when that one is
+                                // waiting for review or a decision.
+                                if (
+                                  !issue.parent_issue_id ||
+                                  agentStatusByIssueId.has(issue.id) ||
+                                  approvalsByIssueId.has(issue.id)
+                                )
+                                  return null;
+                                const parentId = issue.parent_issue_id;
+                                const pst = agentStatusByIssueId.get(parentId);
+                                if (!pst) return null;
+                                const parent = issuesById.get(parentId);
+                                const parentWs = getWorkspacesForIssue(
+                                  parentId
+                                ).find(
+                                  (w) => !w.archived && !!w.local_workspace_id
+                                );
+                                const label = {
+                                  approval: '상위 작업에서 승인 필요',
+                                  input: '상위 작업에서 결정 필요',
+                                  running: '상위 작업에서 진행 중',
+                                  failed: '상위 작업이 실패·중단됨',
+                                  done: '상위 작업 완료 · 결과 확인 필요',
+                                }[pst];
+                                const cls =
+                                  pst === 'running'
+                                    ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
+                                    : pst === 'failed'
+                                      ? 'bg-red-500/10 text-red-600 dark:text-red-300'
+                                      : 'bg-orange-500/15 text-orange-600 dark:text-orange-300';
+                                return (
                                   <button
                                     type="button"
-                                    disabled={busy}
+                                    className={`mb-half inline-flex rounded-sm px-half py-[1px] text-left text-xs font-medium hover:underline ${cls}`}
+                                    title="클릭하면 상위 작업의 결과 화면으로 이동해요"
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      void startIssueReview(
-                                        issue,
-                                        wsId,
-                                        !own
-                                      );
+                                      if (
+                                        projectId &&
+                                        parentWs?.local_workspace_id
+                                      ) {
+                                        appNavigation.goToProjectIssueWorkspace(
+                                          projectId,
+                                          parentId,
+                                          parentWs.local_workspace_id
+                                        );
+                                      }
                                     }}
-                                    className="inline-flex w-fit rounded-sm bg-brand/20 px-half py-[2px] text-xs font-medium text-brand hover:bg-brand/30 disabled:cursor-not-allowed disabled:opacity-50"
-                                    title="승인하면 Codex 리뷰 세션을 시작해요"
                                   >
-                                    {reviewStartingIds.has(issue.id)
-                                      ? '🔍 리뷰 시작하는 중…'
-                                      : st === 'running'
-                                        ? '🔍 에이전트 작업 중 · 끝나면 리뷰 가능'
-                                        : st === 'done' || st === 'input'
-                                          ? '🔍 리뷰 준비됨 · 승인하고 시작 ▶'
-                                          : '🔍 리뷰 승인하고 시작 ▶'}
+                                    ↑ {parent?.simple_id ?? '상위'} {label} →
                                   </button>
-                                  {!own && (
-                                    <span className="text-[10px] text-low">
-                                      상위 작업 공간의 변경분을 이 이슈 범위로 리뷰해요
-                                    </span>
-                                  )}
-                                  {reviewOutcomes[issue.id] === 'running' && (
-                                    <span className="text-[10px] text-blue-500">
-                                      리뷰 결과를 기다리는 중 · 끝나면 이슈 댓글로 남겨요
-                                    </span>
-                                  )}
-                                  {reviewNotes[issue.id] &&
-                                    reviewOutcomes[issue.id] !== 'running' && (
+                                );
+                              })()}
+                              {(() => {
+                                const prs = getPullRequestsForIssue(issue.id);
+                                if (prs.length === 0) return null;
+                                return (
+                                  <div className="mb-half flex flex-wrap gap-half">
+                                    {prs.map((pr) => {
+                                      const st = String(pr.status);
+                                      const cfg =
+                                        st === 'merged'
+                                          ? {
+                                              label: `✓ PR #${pr.number} 병합됨`,
+                                              cls: 'bg-purple-500/15 text-purple-600 dark:text-purple-300',
+                                            }
+                                          : st === 'closed'
+                                            ? {
+                                                label: `PR #${pr.number} 닫힘`,
+                                                cls: 'bg-panel text-low',
+                                              }
+                                            : {
+                                                label: `🔀 PR #${pr.number} 리뷰·병합 필요`,
+                                                cls: 'bg-orange-500/20 text-orange-600 dark:text-orange-300',
+                                              };
+                                      return (
+                                        <a
+                                          key={pr.url}
+                                          href={pr.url}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          title="GitHub에서 PR 열기"
+                                          onClick={(e) => e.stopPropagation()}
+                                          className={`inline-flex rounded-sm px-half py-[1px] text-xs font-medium hover:underline ${cfg.cls}`}
+                                        >
+                                          {cfg.label} ↗
+                                        </a>
+                                      );
+                                    })}
+                                  </div>
+                                );
+                              })()}
+                              {(() => {
+                                const statusName =
+                                  sortedStatuses.find(
+                                    (x) => x.id === issue.status_id
+                                  )?.name ?? '';
+                                if (!/review/i.test(statusName)) return null;
+                                const own = getWorkspacesForIssue(
+                                  issue.id
+                                ).find(
+                                  (w) => !w.archived && !!w.local_workspace_id
+                                );
+                                const parentWs =
+                                  !own && issue.parent_issue_id
+                                    ? getWorkspacesForIssue(
+                                        issue.parent_issue_id
+                                      ).find(
+                                        (w) =>
+                                          !w.archived && !!w.local_workspace_id
+                                      )
+                                    : undefined;
+                                const target = own ?? parentWs;
+                                const st =
+                                  agentStatusByIssueId.get(issue.id) ??
+                                  (parentWs && issue.parent_issue_id
+                                    ? agentStatusByIssueId.get(
+                                        issue.parent_issue_id
+                                      )
+                                    : undefined);
+                                const busy =
+                                  st === 'running' ||
+                                  st === 'approval' ||
+                                  reviewStartingIds.has(issue.id) ||
+                                  reviewOutcomes[issue.id] === 'running';
+                                const err = reviewErrors[issue.id];
+                                if (!target?.local_workspace_id) {
+                                  return (
+                                    <div className="mb-half rounded-sm bg-panel px-half py-[1px] text-xs text-low">
+                                      🔍 리뷰할 작업 공간이 없어요(PR 또는 상위
+                                      작업 연결 필요)
+                                    </div>
+                                  );
+                                }
+                                const wsId = target.local_workspace_id;
+                                return (
+                                  <div className="mb-half flex flex-col gap-[2px]">
+                                    <button
+                                      type="button"
+                                      disabled={busy}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        void startIssueReview(
+                                          issue,
+                                          wsId,
+                                          !own
+                                        );
+                                      }}
+                                      className="inline-flex w-fit rounded-sm bg-brand/20 px-half py-[2px] text-xs font-medium text-brand hover:bg-brand/30 disabled:cursor-not-allowed disabled:opacity-50"
+                                      title="승인하면 Codex 리뷰 세션을 시작해요"
+                                    >
+                                      {reviewStartingIds.has(issue.id)
+                                        ? '🔍 리뷰 시작하는 중…'
+                                        : st === 'running'
+                                          ? '🔍 에이전트 작업 중 · 끝나면 리뷰 가능'
+                                          : st === 'done' || st === 'input'
+                                            ? '🔍 리뷰 준비됨 · 승인하고 시작 ▶'
+                                            : '🔍 리뷰 승인하고 시작 ▶'}
+                                    </button>
+                                    {!own && (
                                       <span className="text-[10px] text-low">
-                                        {reviewNotes[issue.id]}
+                                        상위 작업 공간의 변경분을 이 이슈 범위로
+                                        리뷰해요
                                       </span>
                                     )}
-                                  {err && (
-                                    <span className="text-[10px] text-red-500">
-                                      리뷰 시작 실패: {err}
-                                    </span>
-                                  )}
+                                    {reviewOutcomes[issue.id] === 'running' && (
+                                      <span className="text-[10px] text-blue-500">
+                                        리뷰 결과를 기다리는 중 · 끝나면 이슈
+                                        댓글로 남겨요
+                                      </span>
+                                    )}
+                                    {reviewNotes[issue.id] &&
+                                      reviewOutcomes[issue.id] !==
+                                        'running' && (
+                                        <span className="text-[10px] text-low">
+                                          {reviewNotes[issue.id]}
+                                        </span>
+                                      )}
+                                    {err && (
+                                      <span className="text-[10px] text-red-500">
+                                        리뷰 시작 실패: {err}
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                              <KanbanCardContent
+                                displayId={issue.simple_id}
+                                title={issue.title}
+                                description={issue.description}
+                                priority={issue.priority}
+                                tags={getTagObjectsForIssue(issue.id)}
+                                aiChip={renderAiChip(issue.id)}
+                                assignees={issueAssigneesMap[issue.id] ?? []}
+                                pullRequests={issueCardPullRequests}
+                                relationships={resolveRelationshipsForIssue(
+                                  issue.id,
+                                  getRelationshipsForIssue(issue.id),
+                                  issuesById
+                                )}
+                                isSubIssue={!!issue.parent_issue_id}
+                                isMobile={isMobile}
+                                onPriorityClick={(e) => {
+                                  e.stopPropagation();
+                                  handleCardPriorityClick(issue.id);
+                                }}
+                                onAssigneeClick={(e) => {
+                                  e.stopPropagation();
+                                  handleCardAssigneeClick(issue.id);
+                                }}
+                                onMoreActionsClick={() =>
+                                  handleCardMoreActionsClick(issue.id)
+                                }
+                                tagEditProps={{
+                                  allTags: tags,
+                                  selectedTagIds: getTagsForIssue(issue.id).map(
+                                    (it) => it.tag_id
+                                  ),
+                                  onTagToggle: (tagId) =>
+                                    handleCardTagToggle(issue.id, tagId),
+                                  onCreateTag: handleCreateTag,
+                                  renderTagEditor: ({
+                                    allTags,
+                                    selectedTagIds,
+                                    onTagToggle,
+                                    onCreateTag,
+                                    trigger,
+                                  }) => (
+                                    <SearchableTagDropdownContainer
+                                      tags={allTags}
+                                      selectedTagIds={selectedTagIds}
+                                      onTagToggle={onTagToggle}
+                                      onCreateTag={onCreateTag}
+                                      disabled={false}
+                                      contentClassName=""
+                                      trigger={trigger}
+                                    />
+                                  ),
+                                }}
+                              />
+                              {issueWorkspaces.length > 0 && (
+                                <div className="mt-base flex flex-col gap-half">
+                                  {issueWorkspaces.map((workspace) => (
+                                    <IssueWorkspaceCard
+                                      key={workspace.id}
+                                      workspace={workspace}
+                                      onClick={
+                                        workspace.localWorkspaceId
+                                          ? () =>
+                                              openIssueWorkspace(
+                                                issue.id,
+                                                workspace.localWorkspaceId!
+                                              )
+                                          : undefined
+                                      }
+                                      showOwner={false}
+                                      showStatusBadge={false}
+                                      showNoPrText={false}
+                                    />
+                                  ))}
                                 </div>
-                              );
-                            })()}
-                            <KanbanCardContent
-                              displayId={issue.simple_id}
-                              title={issue.title}
-                              description={issue.description}
-                              priority={issue.priority}
-                              tags={getTagObjectsForIssue(issue.id)}
-                              assignees={issueAssigneesMap[issue.id] ?? []}
-                              pullRequests={issueCardPullRequests}
-                              relationships={resolveRelationshipsForIssue(
-                                issue.id,
-                                getRelationshipsForIssue(issue.id),
-                                issuesById
                               )}
-                              isSubIssue={!!issue.parent_issue_id}
-                              isMobile={isMobile}
-                              onPriorityClick={(e) => {
-                                e.stopPropagation();
-                                handleCardPriorityClick(issue.id);
-                              }}
-                              onAssigneeClick={(e) => {
-                                e.stopPropagation();
-                                handleCardAssigneeClick(issue.id);
-                              }}
-                              onMoreActionsClick={() =>
-                                handleCardMoreActionsClick(issue.id)
-                              }
-                              tagEditProps={{
-                                allTags: tags,
-                                selectedTagIds: getTagsForIssue(issue.id).map(
-                                  (it) => it.tag_id
-                                ),
-                                onTagToggle: (tagId) =>
-                                  handleCardTagToggle(issue.id, tagId),
-                                onCreateTag: handleCreateTag,
-                                renderTagEditor: ({
-                                  allTags,
-                                  selectedTagIds,
-                                  onTagToggle,
-                                  onCreateTag,
-                                  trigger,
-                                }) => (
-                                  <SearchableTagDropdownContainer
-                                    tags={allTags}
-                                    selectedTagIds={selectedTagIds}
-                                    onTagToggle={onTagToggle}
-                                    onCreateTag={onCreateTag}
-                                    disabled={false}
-                                    contentClassName=""
-                                    trigger={trigger}
-                                  />
-                                ),
-                              }}
-                            />
-                            {issueWorkspaces.length > 0 && (
-                              <div className="mt-base flex flex-col gap-half">
-                                {issueWorkspaces.map((workspace) => (
-                                  <IssueWorkspaceCard
-                                    key={workspace.id}
-                                    workspace={workspace}
-                                    onClick={
-                                      workspace.localWorkspaceId
-                                        ? () =>
-                                            openIssueWorkspace(
-                                              issue.id,
-                                              workspace.localWorkspaceId!
-                                            )
-                                        : undefined
-                                    }
-                                    showOwner={false}
-                                    showStatusBadge={false}
-                                    showNoPrText={false}
-                                  />
-                                ))}
-                              </div>
-                            )}
-                          </KanbanCard>
+                            </KanbanCard>
                           </Fragment>
                         );
                       })}
