@@ -78,6 +78,7 @@ import { KanbanCardApprovals } from './KanbanCardApprovals';
 import { useApprovals } from '@/shared/hooks/useApprovals';
 import { executionProcessesApi, sessionsApi } from '@/shared/lib/api';
 import type { ApprovalInfo } from 'shared/types';
+import { BaseCodingAgent } from 'shared/types';
 
 const areStringSetsEqual = (left: string[], right: string[]): boolean => {
   if (left.length !== right.length) {
@@ -505,6 +506,69 @@ export function KanbanContainer() {
   // Track items as arrays of IDs grouped by status
   const [items, setItems] = useState<Record<string, string[]>>({});
   const [isFiltersDialogOpen, setIsFiltersDialogOpen] = useState(false);
+  const [reviewStartingIds, setReviewStartingIds] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({});
+
+  // Start a Codex REVIEW session for an issue in "In review" once the user
+  // approves it on the card. Uses the issue's own workspace, or the parent
+  // issue's workspace when the sub-issue was handled there.
+  const startIssueReview = useCallback(
+    async (
+      issue: { id: string; simple_id: string; title: string; description?: string | null },
+      localWorkspaceId: string,
+      viaParent: boolean
+    ) => {
+      setReviewStartingIds((prev) => new Set(prev).add(issue.id));
+      setReviewErrors((prev) => {
+        const next = { ...prev };
+        delete next[issue.id];
+        return next;
+      });
+      try {
+        const session = await sessionsApi.create({
+          workspace_id: localWorkspaceId,
+          executor: BaseCodingAgent.CODEX,
+          name: `리뷰 ${issue.simple_id}`,
+        });
+        const additional = [
+          `[리뷰 대상 이슈] ${issue.simple_id} (issue_id: ${issue.id}) ${issue.title}`,
+          viaParent
+            ? '이 이슈는 상위 이슈의 작업 공간에서 처리되었다. 변경분 중 이 이슈 범위에 해당하는 부분만 리뷰한다.'
+            : '',
+          '[리뷰 기준] 1) 이슈 설명의 "완료 조건"·"세부 실행 항목" 2) 연결된 openspec 명세(openspec/changes/<id>/) 3) 위가 없으면 일반 기준(보안·부작용·누락·테스트).',
+          '[이슈 설명]',
+          (issue.description ?? '').slice(0, 6000),
+          '[결과 형식] 첫 줄을 `✅ 리뷰 통과` 또는 `🔴 수정 필요`로 시작하고, 지적 사항을 심각도(🔴/🟡/🟢)별 표로 정리한다.',
+          '[상태 처리] 수정 필요이면 칸반 도구로 이 이슈를 In progress로 옮기고 지적 사항 요약을 남긴다. 통과이면 상태는 바꾸지 않는다(사람이 최종 확인).',
+        ]
+          .filter(Boolean)
+          .join('\n');
+        await sessionsApi.startReview(session.id, {
+          executor_config: {
+            executor: BaseCodingAgent.CODEX,
+            variant: 'REVIEW',
+            model_id: 'gpt-6.1-sol',
+          },
+          additional_prompt: additional,
+          use_all_workspace_commits: true,
+        });
+      } catch (err) {
+        setReviewErrors((prev) => ({
+          ...prev,
+          [issue.id]: err instanceof Error ? err.message : '리뷰 시작 실패',
+        }));
+      } finally {
+        setReviewStartingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(issue.id);
+          return next;
+        });
+      }
+    },
+    []
+  );
 
   // Sync items from filtered issues when they change
   useEffect(() => {
@@ -1346,6 +1410,82 @@ export function KanbanContainer() {
                                       </a>
                                     );
                                   })}
+                                </div>
+                              );
+                            })()}
+                            {(() => {
+                              const statusName =
+                                sortedStatuses.find(
+                                  (x) => x.id === issue.status_id
+                                )?.name ?? '';
+                              if (!/review/i.test(statusName)) return null;
+                              const own = getWorkspacesForIssue(issue.id).find(
+                                (w) => !w.archived && !!w.local_workspace_id
+                              );
+                              const parentWs =
+                                !own && issue.parent_issue_id
+                                  ? getWorkspacesForIssue(
+                                      issue.parent_issue_id
+                                    ).find(
+                                      (w) =>
+                                        !w.archived && !!w.local_workspace_id
+                                    )
+                                  : undefined;
+                              const target = own ?? parentWs;
+                              const st =
+                                agentStatusByIssueId.get(issue.id) ??
+                                (parentWs && issue.parent_issue_id
+                                  ? agentStatusByIssueId.get(
+                                      issue.parent_issue_id
+                                    )
+                                  : undefined);
+                              const busy =
+                                st === 'running' ||
+                                st === 'approval' ||
+                                reviewStartingIds.has(issue.id);
+                              const err = reviewErrors[issue.id];
+                              if (!target?.local_workspace_id) {
+                                return (
+                                  <div className="mb-half rounded-sm bg-panel px-half py-[1px] text-xs text-low">
+                                    🔍 리뷰할 작업 공간이 없어요(PR 또는 상위 작업 연결 필요)
+                                  </div>
+                                );
+                              }
+                              const wsId = target.local_workspace_id;
+                              return (
+                                <div className="mb-half flex flex-col gap-[2px]">
+                                  <button
+                                    type="button"
+                                    disabled={busy}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      void startIssueReview(
+                                        issue,
+                                        wsId,
+                                        !own
+                                      );
+                                    }}
+                                    className="inline-flex w-fit rounded-sm bg-brand/20 px-half py-[2px] text-xs font-medium text-brand hover:bg-brand/30 disabled:cursor-not-allowed disabled:opacity-50"
+                                    title="승인하면 Codex 리뷰 세션을 시작해요"
+                                  >
+                                    {reviewStartingIds.has(issue.id)
+                                      ? '🔍 리뷰 시작하는 중…'
+                                      : st === 'running'
+                                        ? '🔍 에이전트 작업 중 · 끝나면 리뷰 가능'
+                                        : st === 'done' || st === 'input'
+                                          ? '🔍 리뷰 준비됨 · 승인하고 시작 ▶'
+                                          : '🔍 리뷰 승인하고 시작 ▶'}
+                                  </button>
+                                  {!own && (
+                                    <span className="text-[10px] text-low">
+                                      상위 작업 공간의 변경분을 이 이슈 범위로 리뷰해요
+                                    </span>
+                                  )}
+                                  {err && (
+                                    <span className="text-[10px] text-red-500">
+                                      리뷰 시작 실패: {err}
+                                    </span>
+                                  )}
                                 </div>
                               );
                             })()}
