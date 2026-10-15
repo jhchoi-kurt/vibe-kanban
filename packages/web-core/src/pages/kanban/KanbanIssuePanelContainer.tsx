@@ -995,9 +995,12 @@ export function KanbanIssuePanelContainer({
   // Copy link callback - copies issue URL to clipboard
   const handleCopyLink = useCallback(() => {
     if (!selectedKanbanIssueId || !projectId) return;
-    const url = `${window.location.origin}/projects/${projectId}/issues/${selectedKanbanIssueId}`;
+    // Prefer the short link (/bdb-6); fall back to the full URL.
+    const url = selectedIssue?.simple_id
+      ? `${window.location.origin}/${selectedIssue.simple_id.toLowerCase()}`
+      : `${window.location.origin}/projects/${projectId}/issues/${selectedKanbanIssueId}`;
     navigator.clipboard.writeText(url);
-  }, [projectId, selectedKanbanIssueId]);
+  }, [projectId, selectedKanbanIssueId, selectedIssue?.simple_id]);
 
   // More actions callback - opens command bar with issue actions
   const handleMoreActions = useCallback(async () => {

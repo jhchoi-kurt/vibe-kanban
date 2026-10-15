@@ -321,6 +321,58 @@ export function KanbanContainer() {
     return ids;
   }, [issueRelationships, issuesById, doneStatusIds]);
 
+  // Parent → child counts (total / done) for the "하위 n개 (완료 m)" line.
+  const childSummaryByParentId = useMemo(() => {
+    const map = new Map<string, { total: number; done: number }>();
+    for (const i of issues) {
+      if (!i.parent_issue_id) continue;
+      const cur = map.get(i.parent_issue_id) ?? { total: 0, done: 0 };
+      cur.total += 1;
+      if (doneStatusIds.has(i.status_id)) cur.done += 1;
+      map.set(i.parent_issue_id, cur);
+    }
+    return map;
+  }, [issues, doneStatusIds]);
+
+  // Resizable column width, persisted in localStorage.
+  const [columnWidth, setColumnWidth] = useState<number>(() => {
+    const saved = Number(
+      typeof window !== 'undefined'
+        ? window.localStorage.getItem('vk.kanban.columnWidth')
+        : NaN
+    );
+    return Number.isFinite(saved) && saved >= 220 && saved <= 900
+      ? saved
+      : 340;
+  });
+  const startColumnResize = useCallback(
+    (e: {
+      clientX: number;
+      preventDefault: () => void;
+      stopPropagation: () => void;
+    }) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startW = columnWidth;
+      let latest = startW;
+      const onMove = (ev: globalThis.MouseEvent) => {
+        latest = Math.min(900, Math.max(220, startW + ev.clientX - startX));
+        setColumnWidth(latest);
+      };
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        document.body.style.cursor = '';
+        window.localStorage.setItem('vk.kanban.columnWidth', String(latest));
+      };
+      document.body.style.cursor = 'col-resize';
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    },
+    [columnWidth]
+  );
+
   const { filteredIssues } = useKanbanFilters({
     issues,
     issueAssignees,
@@ -1052,9 +1104,24 @@ export function KanbanContainer() {
 
       // Cards that need the user's action always float to the top
       // (stable: original order is kept within each group).
+      // Within each group: priority (긴급→낮음→없음), then ready before blocked.
+      const byPriorityThenBlocked = (list: typeof statusIssues) =>
+        [...list].sort((a, b) => {
+          const pa = a.priority ? PRIORITY_ORDER[a.priority] : Infinity;
+          const pb = b.priority ? PRIORITY_ORDER[b.priority] : Infinity;
+          if (pa !== pb) return pa < pb ? -1 : 1;
+          return (
+            Number(blockedIssueIds.has(a.id)) -
+            Number(blockedIssueIds.has(b.id))
+          );
+        });
       const actionFirst = (list: typeof statusIssues) => [
-        ...list.filter((i) => actionNeededIssueIds.has(i.id)),
-        ...list.filter((i) => !actionNeededIssueIds.has(i.id)),
+        ...byPriorityThenBlocked(
+          list.filter((i) => actionNeededIssueIds.has(i.id))
+        ),
+        ...byPriorityThenBlocked(
+          list.filter((i) => !actionNeededIssueIds.has(i.id))
+        ),
       ];
 
       // In the first column (To do), ready issues come before blocked ones.
@@ -1477,7 +1544,10 @@ export function KanbanContainer() {
           </div>
         ) : (
           <div className="flex-1 overflow-x-auto px-double">
-            <KanbanProvider onDragEnd={handleDragEnd}>
+            <KanbanProvider
+              onDragEnd={handleDragEnd}
+              className="!auto-cols-max"
+            >
               {visibleStatuses.map((status) => {
                 const issueIds = items[status.id] ?? [];
                 const isSplitColumn = status.id === firstVisibleStatusId;
@@ -1489,7 +1559,24 @@ export function KanbanContainer() {
                   : 0;
 
                 return (
-                  <KanbanBoard key={status.id}>
+                  <KanbanBoard
+                    key={status.id}
+                    style={{ width: columnWidth }}
+                  >
+                    <div
+                      role="separator"
+                      aria-orientation="vertical"
+                      title="드래그해서 열 너비 조절 (더블클릭: 기본값)"
+                      onMouseDown={startColumnResize}
+                      onDoubleClick={() => {
+                        setColumnWidth(340);
+                        window.localStorage.setItem(
+                          'vk.kanban.columnWidth',
+                          '340'
+                        );
+                      }}
+                      className="absolute top-0 right-0 z-30 h-full w-1.5 translate-x-1/2 cursor-col-resize hover:bg-brand/40"
+                    />
                     <KanbanHeader>
                       <div className="border-t sticky border-b top-0 z-20 flex shrink-0 items-center justify-between gap-2 p-base bg-secondary">
                         <div className="flex items-center gap-2">
@@ -1828,6 +1915,19 @@ export function KanbanContainer() {
                                   issuesById
                                 )}
                                 isSubIssue={!!issue.parent_issue_id}
+                                isBlocked={blockedIssueIds.has(issue.id)}
+                                onRelatedIssueClick={openIssue}
+                                parentIssue={(() => {
+                                  const pid = issue.parent_issue_id;
+                                  const p = pid ? issuesById.get(pid) : null;
+                                  return p
+                                    ? { id: p.id, displayId: p.simple_id }
+                                    : null;
+                                })()}
+                                childSummary={
+                                  childSummaryByParentId.get(issue.id) ?? null
+                                }
+                                shortLink={`${window.location.origin}/${issue.simple_id.toLowerCase()}`}
                                 isMobile={isMobile}
                                 onPriorityClick={(e) => {
                                   e.stopPropagation();

@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ShortKeyRouteImport } from './routes/$shortKey'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as AppExportRouteImport } from './routes/_app.export'
@@ -36,6 +37,11 @@ import { Route as AppProjectsProjectIdIssuesIssueIdHostsHostIdWorkspacesCreateDr
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ShortKeyRoute = ShortKeyRouteImport.update({
+  id: '/$shortKey',
+  path: '/$shortKey',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppRoute = AppRouteImport.update({
@@ -168,6 +174,7 @@ const AppProjectsProjectIdIssuesIssueIdHostsHostIdWorkspacesCreateDraftIdRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/$shortKey': typeof ShortKeyRoute
   '/onboarding': typeof OnboardingRoute
   '/export': typeof AppExportRoute
   '/notifications': typeof AppNotificationsRoute
@@ -192,6 +199,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/$shortKey': typeof ShortKeyRoute
   '/onboarding': typeof OnboardingRoute
   '/export': typeof AppExportRoute
   '/notifications': typeof AppNotificationsRoute
@@ -217,6 +225,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/$shortKey': typeof ShortKeyRoute
   '/_app': typeof AppRouteWithChildren
   '/onboarding': typeof OnboardingRoute
   '/_app/export': typeof AppExportRoute
@@ -244,6 +253,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/$shortKey'
     | '/onboarding'
     | '/export'
     | '/notifications'
@@ -268,6 +278,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/$shortKey'
     | '/onboarding'
     | '/export'
     | '/notifications'
@@ -292,6 +303,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/$shortKey'
     | '/_app'
     | '/onboarding'
     | '/_app/export'
@@ -318,6 +330,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ShortKeyRoute: typeof ShortKeyRoute
   AppRoute: typeof AppRouteWithChildren
   OnboardingRoute: typeof OnboardingRoute
   OnboardingSignInRoute: typeof OnboardingSignInRoute
@@ -332,6 +345,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/$shortKey': {
+      id: '/$shortKey'
+      path: '/$shortKey'
+      fullPath: '/$shortKey'
+      preLoaderRoute: typeof ShortKeyRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app': {
@@ -543,6 +563,7 @@ const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ShortKeyRoute: ShortKeyRoute,
   AppRoute: AppRouteWithChildren,
   OnboardingRoute: OnboardingRoute,
   OnboardingSignInRoute: OnboardingSignInRoute,

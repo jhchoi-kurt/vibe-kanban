@@ -18,6 +18,7 @@ import {
   type DroppableProvided,
 } from '@hello-pangea/dnd';
 import {
+  type CSSProperties,
   type KeyboardEvent,
   type MouseEvent,
   type MutableRefObject,
@@ -53,9 +54,18 @@ export type KanbanBoardProps = {
   className?: string;
 };
 
-export const KanbanBoard = ({ children, className }: KanbanBoardProps) => {
+export const KanbanBoard = ({
+  children,
+  className,
+  style,
+}: KanbanBoardProps & { style?: CSSProperties }) => {
   return (
-    <div className={cn('flex flex-col min-h-40', className)}>{children}</div>
+    <div
+      className={cn('relative flex flex-col min-h-40', className)}
+      style={style}
+    >
+      {children}
+    </div>
   );
 };
 

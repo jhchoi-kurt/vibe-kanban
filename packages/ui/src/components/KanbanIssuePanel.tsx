@@ -268,6 +268,7 @@ export function KanbanIssuePanel({
               onClick={onCopyLink}
               className="p-half rounded-sm text-low hover:text-normal hover:bg-panel transition-colors"
               aria-label={t('kanban.copyLink')}
+              title={`짧은 링크 복사: ${typeof window !== 'undefined' ? window.location.origin : ''}/${displayId.toLowerCase()}`}
             >
               <LinkIcon className="size-icon-sm" weight="bold" />
             </button>

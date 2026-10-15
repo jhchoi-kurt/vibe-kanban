@@ -1,7 +1,7 @@
 "use client";
 
 import type { MouseEvent, ReactNode } from "react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   CircleDashedIcon,
@@ -29,7 +29,21 @@ export interface KanbanRelationship {
   relationshipId: string;
   displayType: RelationshipDisplayType;
   relatedIssueDisplayId: string;
+  relatedIssueId?: string;
 }
+
+const PRIORITY_LABELS: Record<PriorityLevel, { label: string; cls: string }> = {
+  urgent: { label: "긴급", cls: "bg-red-500/15 text-red-600 dark:text-red-300" },
+  high: {
+    label: "높음",
+    cls: "bg-orange-500/15 text-orange-600 dark:text-orange-300",
+  },
+  medium: { label: "보통", cls: "bg-blue-500/10 text-blue-600 dark:text-blue-300" },
+  low: { label: "낮음", cls: "bg-panel text-low" },
+};
+
+const chipCls =
+  "inline-flex items-center h-5 px-half rounded-sm text-xs font-medium whitespace-nowrap";
 
 export interface KanbanPullRequest {
   id: string;
@@ -140,6 +154,14 @@ export type KanbanCardContentProps<TTag extends KanbanTag = KanbanTag> = {
   isMobile?: boolean;
   /** Optional AI owner chip (executor · model · preset) */
   aiChip?: ReactNode;
+  /** True when at least one blocker (선행 작업) is not Done/Cancelled */
+  isBlocked?: boolean;
+  /** Open a related issue (relation chips, parent line) */
+  onRelatedIssueClick?: (issueId: string) => void;
+  parentIssue?: { id: string; displayId: string } | null;
+  childSummary?: { total: number; done: number } | null;
+  /** Short link (e.g. http://localhost:3000/bdb-6); click on the id copies it */
+  shortLink?: string;
 };
 
 export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
@@ -160,7 +182,23 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
   tagEditProps,
   isMobile,
   aiChip,
+  isBlocked,
+  onRelatedIssueClick,
+  parentIssue,
+  childSummary,
+  shortLink,
 }: KanbanCardContentProps<TTag>) {
+  const [copied, setCopied] = useState(false);
+  const blockingRels = relationships.filter(
+    (r) => r.displayType === "blocked_by" || r.displayType === "blocks",
+  );
+  const otherRels = relationships.filter(
+    (r) => r.displayType !== "blocked_by" && r.displayType !== "blocks",
+  );
+  const openRelated = (e: MouseEvent, id?: string) => {
+    e.stopPropagation();
+    if (id && onRelatedIssueClick) onRelatedIssueClick(id);
+  };
   const { t } = useTranslation("common");
   const previewDescription = useMemo(() => {
     if (!description) {
@@ -212,9 +250,43 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
               {t("kanban.subIssueIndicator")}
             </span>
           )}
-          <span className="font-ibm-plex-mono text-sm text-low truncate">
-            {displayId}
-          </span>
+          {shortLink ? (
+            <button
+              type="button"
+              className="font-ibm-plex-mono text-sm text-low truncate hover:text-normal hover:underline"
+              title={`클릭하면 짧은 링크 복사: ${shortLink}`}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                void navigator.clipboard?.writeText(shortLink);
+                setCopied(true);
+                window.setTimeout(() => setCopied(false), 1200);
+              }}
+            >
+              {displayId}
+            </button>
+          ) : (
+            <span className="font-ibm-plex-mono text-sm text-low truncate">
+              {displayId}
+            </span>
+          )}
+          {copied && <span className="text-xs text-success">링크 복사됨</span>}
+          {priority && (
+            <span
+              className={cn(chipCls, PRIORITY_LABELS[priority].cls)}
+              title={`우선순위: ${PRIORITY_LABELS[priority].label}`}
+            >
+              {PRIORITY_LABELS[priority].label}
+            </span>
+          )}
+          {isBlocked && (
+            <span
+              className={cn(chipCls, "bg-red-500/15 text-red-600 dark:text-red-300")}
+              title="아직 끝나지 않은 선행 작업이 있어요"
+            >
+              ⛔ 대기
+            </span>
+          )}
           {isLoading && <RunningDots />}
         </div>
         {onMoreActionsClick && (
@@ -241,7 +313,67 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
       </div>
 
       {/* Row 2: Title */}
-      <span className="text-base text-normal truncate">{title}</span>
+      <span
+        className="text-base text-normal line-clamp-3 break-words"
+        title={title}
+      >
+        {title}
+      </span>
+
+      {/* Parent / child relation */}
+      {(parentIssue || (childSummary && childSummary.total > 0)) && (
+        <div className="flex items-center gap-half flex-wrap text-xs text-low">
+          {parentIssue && (
+            <button
+              type="button"
+              className="hover:text-normal hover:underline"
+              title={`상위 이슈 ${parentIssue.displayId} 열기`}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => openRelated(e, parentIssue.id)}
+            >
+              ↳ 상위: {parentIssue.displayId}
+            </button>
+          )}
+          {childSummary && childSummary.total > 0 && (
+            <span title="하위 이슈 수 (완료된 수)">
+              ▾ 하위 {childSummary.total}개 (완료 {childSummary.done})
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Predecessor / successor chips */}
+      {blockingRels.length > 0 && (
+        <div className="flex items-center gap-half flex-wrap min-w-0">
+          {blockingRels.map((rel) => {
+            const isPred = rel.displayType === "blocked_by";
+            return (
+              <button
+                type="button"
+                key={rel.relationshipId}
+                className={cn(
+                  chipCls,
+                  isPred
+                    ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+                    : "bg-panel text-low",
+                  "hover:underline",
+                )}
+                title={
+                  isPred
+                    ? `선행 작업: ${rel.relatedIssueDisplayId}이(가) 먼저 끝나야 해요`
+                    : `후행 작업: 이 작업이 끝나야 ${rel.relatedIssueDisplayId}을(를) 시작할 수 있어요`
+                }
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => openRelated(e, rel.relatedIssueId)}
+              >
+                {isPred
+                  ? `${rel.relatedIssueDisplayId} 선행`
+                  : `후행 ${rel.relatedIssueDisplayId}`}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Row 3: Description (optional, truncated) */}
       {previewDescription && (
@@ -309,7 +441,7 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
       {(tags.length > 0 ||
         tagEditProps ||
         pullRequests.length > 0 ||
-        relationships.length > 0) && (
+        otherRels.length > 0) && (
         <div className="flex items-center gap-half flex-wrap min-w-0">
           {tagEditProps ? (
             (tagEditProps.renderTagEditor?.({
@@ -340,17 +472,22 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
           {pullRequests.length > 2 && (
             <span className="text-sm text-low">+{pullRequests.length - 2}</span>
           )}
-          {relationships.slice(0, 2).map((rel) => (
+          {otherRels.slice(0, 2).map((rel) => (
             <RelationshipBadge
               key={rel.relationshipId}
               displayType={rel.displayType}
               relatedIssueDisplayId={rel.relatedIssueDisplayId}
               compact
+              onClick={
+                rel.relatedIssueId && onRelatedIssueClick
+                  ? (e) => openRelated(e, rel.relatedIssueId)
+                  : undefined
+              }
             />
           ))}
-          {relationships.length > 2 && (
+          {otherRels.length > 2 && (
             <span className="text-sm text-low">
-              +{relationships.length - 2}
+              +{otherRels.length - 2}
             </span>
           )}
         </div>
