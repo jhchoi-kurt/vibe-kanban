@@ -17,12 +17,12 @@ use codex_app_server_protocol::{
     InitializeParams, InitializeResponse, ItemCompletedNotification, JSONRPCError,
     JSONRPCNotification, JSONRPCRequest, JSONRPCResponse, ListMcpServerStatusParams,
     ListMcpServerStatusResponse, McpServerElicitationAction, McpServerElicitationRequest,
-    McpServerElicitationRequestParams, McpServerElicitationRequestResponse, McpServerStatusDetail, RequestId, ReviewStartParams,
-    ReviewStartResponse, ReviewTarget, ServerRequest, ThreadCompactStartParams,
-    ThreadCompactStartResponse, ThreadForkParams, ThreadForkResponse, ThreadItem, ThreadReadParams,
-    ThreadReadResponse, ThreadStartParams, ThreadStartResponse, ToolRequestUserInputAnswer,
-    ToolRequestUserInputQuestion, ToolRequestUserInputResponse, TurnCompletedNotification,
-    TurnStartParams, TurnStartResponse, TurnStatus, UserInput,
+    McpServerElicitationRequestParams, McpServerElicitationRequestResponse, McpServerStatusDetail,
+    RequestId, ReviewStartParams, ReviewStartResponse, ReviewTarget, ServerRequest,
+    ThreadCompactStartParams, ThreadCompactStartResponse, ThreadForkParams, ThreadForkResponse,
+    ThreadItem, ThreadReadParams, ThreadReadResponse, ThreadStartParams, ThreadStartResponse,
+    ToolRequestUserInputAnswer, ToolRequestUserInputQuestion, ToolRequestUserInputResponse,
+    TurnCompletedNotification, TurnStartParams, TurnStartResponse, TurnStatus, UserInput,
 };
 use codex_protocol::config_types::{CollaborationMode, ModeKind, Settings};
 use futures::TryFutureExt;
@@ -1161,10 +1161,14 @@ mod elicitation_tests {
 
     #[test]
     fn mcp_tool_call_elicitation_is_tool_approval() {
-        let p = params(serde_json::json!({"codex_approval_kind": "mcp_tool_call", "persist": "session"}));
+        let p = params(
+            serde_json::json!({"codex_approval_kind": "mcp_tool_call", "persist": "session"}),
+        );
         assert_eq!(
             elicitation_kind(&p),
-            ElicitationKind::McpToolApproval { display_name: "mcp:vibe_kanban".into() }
+            ElicitationKind::McpToolApproval {
+                display_name: "mcp:vibe_kanban".into()
+            }
         );
         let p = params(serde_json::json!({"codex_approval_kind": "other"}));
         assert_eq!(elicitation_kind(&p), ElicitationKind::Unsupported);

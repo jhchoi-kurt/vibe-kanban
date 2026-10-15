@@ -501,6 +501,25 @@ impl Codex {
                 .get_or_insert_with(HashMap::new)
                 .insert("compact_prompt".to_string(), Value::String(compact.clone()));
         }
+        // Codex 0.142+ asks MCP tool-call approvals (mcpServer/elicitation/request)
+        // independently of `approval_policy`. For presets that must never ask,
+        // pre-approve tools of every MCP server the user configured so no
+        // elicitation is raised (review threads can hang after one is resolved).
+        if matches!(approval_policy, None | Some(V2AskForApproval::Never)) {
+            let names = codex_home()
+                .and_then(|h| std::fs::read_to_string(h.join("config.toml")).ok())
+                .map(|text| mcp_servers_without_approval_mode(&text))
+                .unwrap_or_default();
+            if !names.is_empty() {
+                let map = config.get_or_insert_with(HashMap::new);
+                for name in names {
+                    map.insert(
+                        format!("mcp_servers.{name}.default_tools_approval_mode"),
+                        Value::String("approve".to_string()),
+                    );
+                }
+            }
+        }
         if !matches!(approval_policy, None | Some(V2AskForApproval::Never)) {
             let map = config.get_or_insert_with(HashMap::new);
             map.insert(
@@ -914,5 +933,61 @@ mod codex_live {
                 }
             }
         }
+    }
+}
+
+/// Names of MCP servers in a Codex `config.toml` that don't set
+/// `default_tools_approval_mode` themselves. Only existing servers are
+/// returned: overriding a key of a non-existent server breaks config loading.
+fn mcp_servers_without_approval_mode(config_toml: &str) -> Vec<String> {
+    let Ok(value) = config_toml.parse::<toml::Table>() else {
+        return Vec::new();
+    };
+    let Some(servers) = value.get("mcp_servers").and_then(|v| v.as_table()) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = servers
+        .iter()
+        .filter(|(name, cfg)| {
+            name.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                && cfg.as_table().is_some_and(|t| {
+                    !t.contains_key("default_tools_approval_mode")
+                        && t.get("enabled").and_then(|e| e.as_bool()) != Some(false)
+                })
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
+#[cfg(test)]
+mod mcp_approval_mode_tests {
+    use super::mcp_servers_without_approval_mode;
+
+    #[test]
+    fn lists_only_existing_servers_without_mode() {
+        let toml = r#"
+model = "x"
+[mcp_servers.vibe_kanban]
+command = "vk"
+[mcp_servers.already]
+command = "a"
+default_tools_approval_mode = "prompt"
+[mcp_servers.off]
+command = "o"
+enabled = false
+"#;
+        assert_eq!(
+            mcp_servers_without_approval_mode(toml),
+            vec!["vibe_kanban".to_string()]
+        );
+    }
+
+    #[test]
+    fn no_servers_or_bad_toml() {
+        assert!(mcp_servers_without_approval_mode("model = \"x\"").is_empty());
+        assert!(mcp_servers_without_approval_mode("[[[").is_empty());
     }
 }
