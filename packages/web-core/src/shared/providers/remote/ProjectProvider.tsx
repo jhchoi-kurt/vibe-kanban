@@ -27,6 +27,7 @@ import {
   ProjectContext,
   type ProjectContextValue,
 } from '@/shared/hooks/useProjectContext';
+import { checkStatusMove, showBlockerToast } from '@/shared/lib/blockerGuard';
 
 interface ProjectProviderProps {
   projectId: string;
@@ -224,6 +225,38 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
     [workspacesResult.data]
   );
 
+  // Central guard: every status change through the project context (status
+  // dropdown, command bar, bulk status change, sub-issue section) is rejected
+  // when the issue still has unfinished blocking predecessors.
+  const rawUpdateIssue = issuesResult.update;
+  const guardedUpdateIssue = useCallback<typeof rawUpdateIssue>(
+    (id, changes) => {
+      const target = (changes as { status_id?: string }).status_id;
+      if (target) {
+        const msg = checkStatusMove(
+          id,
+          target,
+          statusesResult.data,
+          issuesById,
+          issueRelationshipsResult.data
+        );
+        if (msg) {
+          showBlockerToast(msg);
+          const persisted = Promise.reject(new Error(msg));
+          persisted.catch(() => undefined);
+          return { persisted };
+        }
+      }
+      return rawUpdateIssue(id, changes);
+    },
+    [
+      rawUpdateIssue,
+      statusesResult.data,
+      issuesById,
+      issueRelationshipsResult.data,
+    ]
+  );
+
   const value = useMemo<ProjectContextValue>(
     () => ({
       projectId,
@@ -247,7 +280,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
 
       // Issue mutations
       insertIssue: issuesResult.insert,
-      updateIssue: issuesResult.update,
+      updateIssue: guardedUpdateIssue,
       removeIssue: issuesResult.remove,
 
       // Status mutations
@@ -324,6 +357,7 @@ export function ProjectProvider({ projectId, children }: ProjectProviderProps) {
       getTag,
       getPullRequestsForIssue,
       getWorkspacesForIssue,
+      guardedUpdateIssue,
       issuesById,
       statusesById,
       tagsById,

@@ -1,3 +1,8 @@
+import {
+  blockerMessage,
+  fetchUnfinishedBlockers,
+  showBlockerToast,
+} from '@/shared/lib/blockerGuard';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { workspacesApi } from '@/shared/lib/api';
 import type { CreateAndStartWorkspaceRequest } from 'shared/types';
@@ -21,6 +26,18 @@ export function useCreateWorkspace() {
 
   const createWorkspace = useMutation({
     mutationFn: async ({ data, linkToIssue }: CreateWorkspaceParams) => {
+      const guardIssueId =
+        linkToIssue?.issueId ?? data.linked_issue?.issue_id ?? null;
+      if (guardIssueId) {
+        const blockers = await fetchUnfinishedBlockers(guardIssueId);
+        if (blockers.length) {
+          const msg = blockerMessage(blockers, '시작할');
+          showBlockerToast(msg);
+          const err = new Error(msg);
+          err.name = 'BlockedByPredecessor';
+          throw err;
+        }
+      }
       const { workspace } = await workspacesApi.createAndStart(data);
 
       if (linkToIssue && workspace) {
@@ -48,6 +65,8 @@ export function useCreateWorkspace() {
       const issueId =
         vars.linkToIssue?.issueId ?? vars.data.linked_issue?.issue_id;
       if (!issueId) return;
+      // Blocked by predecessors: toast already shown, not a run failure.
+      if (err instanceof Error && err.name === 'BlockedByPredecessor') return;
       const reason = err instanceof Error ? err.message : String(err);
       // one comment per distinct error per issue per minute (double clicks)
       const key = `start:${issueId}:${Math.floor(Date.now() / 60000)}:${reason.slice(0, 80)}`;

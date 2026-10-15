@@ -80,6 +80,12 @@ import { SearchableTagDropdownContainer } from '@/shared/components/SearchableTa
 import type { IssuePriority } from 'shared/remote-types';
 import { useIssueMultiSelect } from '@/shared/hooks/useIssueMultiSelect';
 import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
+import {
+  blockerMessage,
+  checkStatusMove,
+  getUnfinishedBlockers,
+  showBlockerToast,
+} from '@/shared/lib/blockerGuard';
 import { BulkActionBarContainer } from './BulkActionBarContainer';
 import { KanbanCardApprovals } from './KanbanCardApprovals';
 import { UnlinkedWorkspacesSection } from './UnlinkedWorkspacesSection';
@@ -341,9 +347,7 @@ export function KanbanContainer() {
         ? window.localStorage.getItem('vk.kanban.columnWidth')
         : NaN
     );
-    return Number.isFinite(saved) && saved >= 220 && saved <= 900
-      ? saved
-      : 340;
+    return Number.isFinite(saved) && saved >= 220 && saved <= 900 ? saved : 340;
   });
   const startColumnResize = useCallback(
     (e: {
@@ -1231,6 +1235,21 @@ export function KanbanContainer() {
         return;
       }
 
+      // Blocked issues may only move into backlog/To do type columns.
+      if (source.droppableId !== destination.droppableId) {
+        const blockMsg = checkStatusMove(
+          result.draggableId,
+          destination.droppableId,
+          statuses,
+          issuesById,
+          issueRelationships
+        );
+        if (blockMsg) {
+          showBlockerToast(blockMsg);
+          return;
+        }
+      }
+
       const isManualSort = kanbanFilters.sortField === 'sort_order';
 
       // Block within-column reordering when not in manual sort mode
@@ -1307,7 +1326,13 @@ export function KanbanContainer() {
           }, 500);
         });
     },
-    [kanbanFilters.sortField, calculateSortOrder]
+    [
+      kanbanFilters.sortField,
+      calculateSortOrder,
+      statuses,
+      issuesById,
+      issueRelationships,
+    ]
   );
 
   // Multi-select support
@@ -1559,10 +1584,7 @@ export function KanbanContainer() {
                   : 0;
 
                 return (
-                  <KanbanBoard
-                    key={status.id}
-                    style={{ width: columnWidth }}
-                  >
+                  <KanbanBoard key={status.id} style={{ width: columnWidth }}>
                     <div
                       role="separator"
                       aria-orientation="vertical"
@@ -1849,13 +1871,29 @@ export function KanbanContainer() {
                                   );
                                 }
                                 const wsId = target.local_workspace_id;
+                                const reviewBlockers = getUnfinishedBlockers(
+                                  issue.id,
+                                  issuesById,
+                                  issueRelationships,
+                                  doneStatusIds
+                                );
+                                const reviewBlockMsg = reviewBlockers.length
+                                  ? blockerMessage(
+                                      reviewBlockers,
+                                      '리뷰를 시작할'
+                                    )
+                                  : null;
                                 return (
                                   <div className="mb-half flex flex-col gap-[2px]">
                                     <button
                                       type="button"
-                                      disabled={busy}
+                                      disabled={busy || !!reviewBlockMsg}
                                       onClick={(e) => {
                                         e.stopPropagation();
+                                        if (reviewBlockMsg) {
+                                          showBlockerToast(reviewBlockMsg);
+                                          return;
+                                        }
                                         void startIssueReview(
                                           issue,
                                           wsId,
@@ -1863,15 +1901,20 @@ export function KanbanContainer() {
                                         );
                                       }}
                                       className="inline-flex w-fit rounded-sm bg-brand/20 px-half py-[2px] text-xs font-medium text-brand hover:bg-brand/30 disabled:cursor-not-allowed disabled:opacity-50"
-                                      title="승인하면 Codex 리뷰 세션을 시작해요"
+                                      title={
+                                        reviewBlockMsg ??
+                                        '승인하면 Codex 리뷰 세션을 시작해요'
+                                      }
                                     >
-                                      {reviewStartingIds.has(issue.id)
-                                        ? '🔍 리뷰 시작하는 중…'
-                                        : st === 'running'
-                                          ? '🔍 에이전트 작업 중 · 끝나면 리뷰 가능'
-                                          : st === 'done' || st === 'input'
-                                            ? '🔍 리뷰 준비됨 · 승인하고 시작 ▶'
-                                            : '🔍 리뷰 승인하고 시작 ▶'}
+                                      {reviewBlockMsg
+                                        ? `⛔ ${reviewBlockMsg}`
+                                        : reviewStartingIds.has(issue.id)
+                                          ? '🔍 리뷰 시작하는 중…'
+                                          : st === 'running'
+                                            ? '🔍 에이전트 작업 중 · 끝나면 리뷰 가능'
+                                            : st === 'done' || st === 'input'
+                                              ? '🔍 리뷰 준비됨 · 승인하고 시작 ▶'
+                                              : '🔍 리뷰 승인하고 시작 ▶'}
                                     </button>
                                     {!own && (
                                       <span className="text-[10px] text-low">

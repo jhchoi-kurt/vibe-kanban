@@ -1,3 +1,9 @@
+import {
+  blockerMessage,
+  computeDoneStatusIds,
+  getUnfinishedBlockers,
+  showBlockerToast,
+} from '@/shared/lib/blockerGuard';
 import { useMemo, useCallback } from 'react';
 import { useParams } from '@tanstack/react-router';
 import { useTranslation } from 'react-i18next';
@@ -46,6 +52,9 @@ export function IssueWorkspacesSectionContainer({
     getIssue,
     getWorkspacesForIssue,
     issues,
+    statuses,
+    issuesById,
+    issueRelationships,
     isLoading: projectLoading,
   } = useProjectContext();
   const { activeWorkspaces, archivedWorkspaces } = useWorkspaceContext();
@@ -132,6 +141,16 @@ export function IssueWorkspacesSectionContainer({
     if (!projectId) {
       return;
     }
+    const startBlockers = getUnfinishedBlockers(
+      issueId,
+      issuesById,
+      issueRelationships,
+      computeDoneStatusIds(statuses)
+    );
+    if (startBlockers.length) {
+      showBlockerToast(blockerMessage(startBlockers, '시작할'));
+      return;
+    }
 
     const issue = getIssue(issueId);
     const initialPrompt = buildWorkspaceCreatePrompt(
@@ -177,6 +196,9 @@ export function IssueWorkspacesSectionContainer({
     archivedWorkspaces,
     workspaces,
     t,
+    statuses,
+    issuesById,
+    issueRelationships,
   ]);
 
   // Handle clicking link action to link an existing workspace
@@ -185,9 +207,8 @@ export function IssueWorkspacesSectionContainer({
       return;
     }
 
-    const { WorkspaceSelectionDialog } = await import(
-      '@/shared/dialogs/command-bar/WorkspaceSelectionDialog'
-    );
+    const { WorkspaceSelectionDialog } =
+      await import('@/shared/dialogs/command-bar/WorkspaceSelectionDialog');
     await WorkspaceSelectionDialog.show({ projectId, issueId });
   }, [projectId, issueId]);
 
