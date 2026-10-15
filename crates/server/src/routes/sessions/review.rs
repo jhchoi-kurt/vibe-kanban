@@ -53,6 +53,18 @@ pub async fn start_review(
             "Workspace not found".to_string(),
         )))?;
 
+    if let Ok(client) = deployment.remote_client()
+        && let Ok(remote_ws) = client.get_workspace_by_local_id(workspace.id).await
+        && let Some(issue_id) = remote_ws.issue_id
+    {
+        crate::routes::remote::blocker_guard::ensure_issue_startable(
+            &client,
+            issue_id,
+            "리뷰를 시작할",
+        )
+        .await?;
+    }
+
     if ExecutionProcess::has_running_non_dev_server_processes_for_workspace(pool, workspace.id)
         .await?
     {

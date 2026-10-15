@@ -357,6 +357,10 @@ async fn update_issue(
     let organization_id =
         ensure_project_access(state.pool(), ctx.user.id, issue.project_id).await?;
 
+    if let Some(target) = payload.status_id {
+        ensure_status_move_allowed(state.pool(), &issue, target).await?;
+    }
+
     let mut tx = crate::db::begin_tx(state.pool()).await.map_err(|error| {
         tracing::error!(?error, "failed to begin transaction");
         ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
@@ -537,6 +541,10 @@ async fn bulk_update_issues(
             ));
         }
 
+        if let Some(target) = item.changes.status_id {
+            ensure_status_move_allowed(state.pool(), &issue, target).await?;
+        }
+
         // Update the issue
         let updated = IssueRepository::update(
             &mut *tx,
@@ -581,4 +589,83 @@ async fn bulk_update_issues(
         data: results,
         txid,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// Blocking-predecessor guard (mirrors local server `blocker_guard.rs` and the
+// frontend `blockerGuard.ts`): a blocked issue may only move into a
+// backlog / To do type status until all its blockers are Done-category
+// (hidden status or last visible column).
+// ---------------------------------------------------------------------------
+
+fn is_backlog_like_status(name: &str) -> bool {
+    let compact: String = name
+        .to_lowercase()
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .collect();
+    ["backlog", "todo", "할일", "백로그", "대기"]
+        .iter()
+        .any(|k| compact.contains(k))
+}
+
+async fn ensure_status_move_allowed(
+    pool: &sqlx::PgPool,
+    issue: &Issue,
+    target_status_id: Uuid,
+) -> Result<(), ErrorResponse> {
+    if issue.status_id == target_status_id {
+        return Ok(());
+    }
+    let statuses = ProjectStatusRepository::list_by_project(pool, issue.project_id)
+        .await
+        .map_err(|error| {
+            tracing::error!(?error, "failed to load project statuses");
+            ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+        })?;
+    match statuses.iter().find(|s| s.id == target_status_id) {
+        None => return Ok(()),
+        Some(s) if is_backlog_like_status(&s.name) => return Ok(()),
+        Some(_) => {}
+    }
+    let mut done: std::collections::HashSet<Uuid> =
+        statuses.iter().filter(|s| s.hidden).map(|s| s.id).collect();
+    if let Some(last) = statuses.iter().filter(|s| !s.hidden).max_by(|a, b| {
+        a.sort_order
+            .partial_cmp(&b.sort_order)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    }) {
+        done.insert(last.id);
+    }
+    let blockers: Vec<(String, Uuid)> = sqlx::query_as(
+        r#"SELECT i.simple_id, i.status_id
+           FROM issue_relationships r
+           JOIN issues i ON i.id = r.issue_id
+           WHERE r.related_issue_id = $1
+             AND r.relationship_type = 'blocking'
+           ORDER BY i.issue_number"#,
+    )
+    .bind(issue.id)
+    .fetch_all(pool)
+    .await
+    .map_err(|error| {
+        tracing::error!(?error, "failed to load blocking relationships");
+        ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+    })?;
+    let unfinished: Vec<String> = blockers
+        .into_iter()
+        .filter(|(_, status)| !done.contains(status))
+        .map(|(sid, _)| sid)
+        .collect();
+    if unfinished.is_empty() {
+        Ok(())
+    } else {
+        Err(ErrorResponse::new(
+            StatusCode::CONFLICT,
+            format!(
+                "⛔ 선행 작업 {}가 끝나야 옮길 수 있어요",
+                unfinished.join(", ")
+            ),
+        ))
+    }
 }

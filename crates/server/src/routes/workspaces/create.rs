@@ -234,6 +234,17 @@ pub async fn create_and_start_workspace(
         ));
     }
 
+    if let Some(linked_issue) = &linked_issue
+        && let Ok(client) = deployment.remote_client()
+    {
+        crate::routes::remote::blocker_guard::ensure_issue_startable(
+            &client,
+            linked_issue.issue_id,
+            "시작할",
+        )
+        .await?;
+    }
+
     let mut managed_workspace = deployment
         .workspace_manager()
         .load_managed_workspace(create_workspace_record(&deployment, name).await?)

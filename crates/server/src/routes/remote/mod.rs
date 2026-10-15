@@ -2,6 +2,7 @@ use axum::Router;
 
 use crate::DeploymentImpl;
 
+pub(crate) mod blocker_guard;
 mod issue_assignees;
 mod issue_relationships;
 mod issue_tags;

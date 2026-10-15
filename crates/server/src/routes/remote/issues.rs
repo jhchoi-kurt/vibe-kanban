@@ -65,6 +65,9 @@ async fn update_issue(
     Json(request): Json<UpdateIssueRequest>,
 ) -> Result<ResponseJson<ApiResponse<MutationResponse<Issue>>>, ApiError> {
     let client = deployment.remote_client()?;
+    if let Some(target) = request.status_id {
+        super::blocker_guard::ensure_status_move_allowed(&client, issue_id, target).await?;
+    }
     let response = client.update_issue(issue_id, &request).await?;
     Ok(ResponseJson(ApiResponse::success(response)))
 }
